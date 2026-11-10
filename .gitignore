@@ -1,0 +1,34 @@
+# Build output
+bin/
+obj/
+out/
+dist/
+publish/
+*.binlog
+
+# Packaging / signing artifacts (never publish keys or certs)
+*.pfx
+*.cer
+*.snk
+*.msix
+*.appx
+*.thumbprint.txt
+
+# IDE
+.vs/
+.vscode/
+.idea/
+*.user
+*.suo
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+
+# Local data (the app keeps its data in %LOCALAPPDATA%\NotiRelay, never in the repo)
+*.db
+*.sqlite
+*.log
+settings.json
+*.dat
