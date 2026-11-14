@@ -125,4 +125,46 @@ public class MissedMessagesTests
         Assert.Equal("[today 09:14] hi", MissedMessages.Body("hi", new DateTime(2026, 11, 14, 9, 14, 0), Now));
         Assert.Equal("hi", MissedMessages.Body("hi", null, Now));
     }
+
+    [Fact]
+    public void Describe_IncludesUnsentFromBeforeFirst()
+    {
+        Assert.Equal(
+            "143 unsent notifications from before · 3 Teams messages · oldest from Thu 09:14",
+            MissedMessages.Describe(143, 3, 0, new DateTime(2026, 11, 12, 9, 14, 0), Now));
+        Assert.Equal(
+            "1 unsent notification from before",
+            MissedMessages.Describe(1, 0, 0, null, Now));
+    }
+
+    [Fact]
+    public void DescribeWaiting_CountsAndOldest()
+    {
+        Assert.Equal(
+            "5 notifications waiting · oldest from today 10:02",
+            MissedMessages.DescribeWaiting(5, new DateTime(2026, 11, 14, 10, 2, 0), Now));
+        Assert.Equal("1 notification waiting", MissedMessages.DescribeWaiting(1, null, Now));
+    }
+
+    [Fact]
+    public void LaunchPrompt_KeepsTheUsersQuestion()
+    {
+        PromptText prompt = MissedMessages.LaunchPrompt("143 unsent notifications from before");
+
+        Assert.Equal(MissedMessages.Question, prompt.Question);
+        Assert.Equal("143 unsent notifications from before", prompt.Details);
+        Assert.Equal("Yes, send them", prompt.YesText);
+        Assert.Equal("No, start from now", prompt.NoText);
+        Assert.Contains("Nothing is sent until you answer", prompt.Note);
+    }
+
+    [Fact]
+    public void ResumePrompt_OffersSendOrDiscard()
+    {
+        PromptText prompt = MissedMessages.ResumePrompt("5 notifications waiting");
+
+        Assert.Equal("5 notifications waiting", prompt.Details);
+        Assert.Equal("Yes, send them", prompt.YesText);
+        Assert.Equal("No, discard them", prompt.NoText);
+    }
 }

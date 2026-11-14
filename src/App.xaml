@@ -199,6 +199,20 @@
             </Setter>
         </Style>
 
+        <!-- Red button for an action that stops something right away (Stop sending) -->
+        <Style x:Key="DangerButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Foreground" Value="White" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Background">
+                <Setter.Value>
+                    <LinearGradientBrush StartPoint="0,0" EndPoint="0,1">
+                        <GradientStop Color="#EF4444" Offset="0" />
+                        <GradientStop Color="#DC2626" Offset="1" />
+                    </LinearGradientBrush>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
         <!-- Compact secondary button (Copy / Clear in the log header) -->
         <Style x:Key="SmallButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
             <Setter Property="MinHeight" Value="28" />

@@ -19,6 +19,12 @@ public sealed record QueuedNotification
     public string LastError { get; init; } = string.Empty;
 }
 
+/// <summary>The queue at one moment: item ids and the oldest item's creation time.</summary>
+public sealed record PendingSnapshot(IReadOnlyList<string> Ids, DateTime? OldestCreatedUtc)
+{
+    public static readonly PendingSnapshot Empty = new(Array.Empty<string>(), null);
+}
+
 public sealed class DeliveryQueue
 {
     private const int MaxPendingItems = 500;
@@ -257,6 +263,67 @@ public sealed class DeliveryQueue
         try
         {
             return _items.Count;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    public async Task<PendingSnapshot> GetPendingSnapshotAsync()
+    {
+        await _gate.WaitAsync();
+
+        try
+        {
+            if (_items.Count == 0)
+                return PendingSnapshot.Empty;
+
+            return new PendingSnapshot(
+                _items.Select(item => item.Id).ToList(),
+                _items.Min(item => item.CreatedAtUtc));
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Removes the listed items that are still queued; returns how many were removed.</summary>
+    public async Task<int> RemoveAsync(IReadOnlyCollection<string> ids)
+    {
+        if (ids.Count == 0)
+            return 0;
+
+        var wanted = new HashSet<string>(ids, StringComparer.Ordinal);
+
+        await _gate.WaitAsync();
+
+        try
+        {
+            List<QueuedNotification> previous = _items;
+            List<QueuedNotification> kept = _items
+                .Where(item => !wanted.Contains(item.Id))
+                .ToList();
+
+            int removed = previous.Count - kept.Count;
+
+            if (removed == 0)
+                return 0;
+
+            _items = kept;
+
+            try
+            {
+                SaveQueueLocked();
+            }
+            catch
+            {
+                _items = previous;
+                throw;
+            }
+
+            return removed;
         }
         finally
         {

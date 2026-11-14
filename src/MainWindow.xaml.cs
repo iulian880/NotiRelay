@@ -51,6 +51,17 @@ public partial class MainWindow : Window
     private string? _debugTopic;
     private bool _debugWriteWarned;
 
+    // Sending to ntfy is held until the launch question is answered, and while the user
+    // has pressed Stop sending.
+    private readonly SendingGate _sendingGate = new();
+    private System.Windows.Forms.ToolStripMenuItem? _traySendingItem;
+    private bool _resumeInProgress;
+    private readonly ActionDebounce _sendingToggleDebounce = new(TimeSpan.FromMilliseconds(700));
+
+    // Windows is signing out or shutting down: a prompt closed by the system is not the
+    // user's "No", so nothing is discarded and sending is not reopened.
+    private bool _sessionEnding;
+
     // When NotiRelay last ran, read before this run overwrites it: toasts newer than
     // this were missed while the app was closed.
     private readonly DateTimeOffset? _previousActiveUtc;
@@ -86,7 +97,11 @@ public partial class MainWindow : Window
         _heartbeatTimer.Tick += (_, _) => SaveHeartbeat();
         _heartbeatTimer.Start();
 
-        System.Windows.Application.Current.SessionEnding += (_, _) => SaveHeartbeat();
+        System.Windows.Application.Current.SessionEnding += (_, _) =>
+        {
+            _sessionEnding = true;
+            SaveHeartbeat();
+        };
 
         TeamsInboxPathBox.Text = _settings.TeamsInboxPath;
 
@@ -95,7 +110,8 @@ public partial class MainWindow : Window
         _deliveryWorker = new DeliveryWorker(
             _deliveryQueue,
             _httpClient,
-            LogFromWorker);
+            LogFromWorker,
+            _sendingGate);
 
         _teamsInboxWatcher = new TeamsInboxWatcher(
             _deliveryQueue,
@@ -154,7 +170,9 @@ public partial class MainWindow : Window
                 _teamsInboxWatcher.RecoveryWarning);
         }
 
-        // Recover and deliver previously queued notifications.
+        // Previously queued notifications wait for the launch question: nothing is sent
+        // until the user answers it (or there is nothing old to ask about).
+        _sendingGate.Hold(SendingHold.LaunchQuestion);
         _deliveryWorker.Start();
 
         // Automatically start configured integrations.
@@ -164,11 +182,13 @@ public partial class MainWindow : Window
             if (Array.IndexOf(Environment.GetCommandLineArgs(), StartupManager.AutostartArgument) >= 0)
                 WindowState = WindowState.Minimized;
 
-            // New messages are relayed from now on; only those missed while the app was
-            // closed wait for the user's answer.
+            // Old queue items are listed before monitoring can add new ones, so
+            // "start from now" removes only what was waiting from before.
+            PendingSnapshot backlog = await SnapshotQueueAsync();
+
             await AutoStartAsync();
             await AutoStartTeamsInboxAsync();
-            await AskAboutMissedMessagesAsync();
+            await AskAboutBacklogAtLaunchAsync(backlog);
         };
     }
 
@@ -202,42 +222,223 @@ public partial class MainWindow : Window
         }
     }
 
-    private async Task AskAboutMissedMessagesAsync()
+    private async Task<PendingSnapshot> SnapshotQueueAsync()
     {
-        int teamsCount = _launchMissedTeams.Count;
-        int outlookCount = _missedOutlook.Count;
+        try
+        {
+            return await _deliveryQueue.GetPendingSnapshotAsync();
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not read the delivery queue: " + ex.Message, ex);
+            return PendingSnapshot.Empty;
+        }
+    }
 
-        if (teamsCount + outlookCount == 0 || _isShuttingDown)
+    // Asked at launch when anything old would be sent: unsent queue items from before,
+    // Teams messages and Outlook toasts missed while closed. Sending stays held until then.
+    private async Task AskAboutBacklogAtLaunchAsync(PendingSnapshot backlog)
+    {
+        try
+        {
+            int queuedCount = backlog.Ids.Count;
+            int teamsCount = _launchMissedTeams.Count;
+            int outlookCount = _missedOutlook.Count;
+
+            if (queuedCount + teamsCount + outlookCount == 0 || _isShuttingDown)
+                return;
+
+            DateTimeOffset? queuedOldest = backlog.OldestCreatedUtc is { } created
+                ? new DateTimeOffset(DateTime.SpecifyKind(created, DateTimeKind.Utc))
+                : null;
+
+            DateTimeOffset? oldest = _launchMissedTeams
+                .Select(missed => (DateTimeOffset?)missed.SortTimeUtc)
+                .Concat(_missedOutlook.Select(toast => (DateTimeOffset?)toast.CreatedAt))
+                .Append(queuedOldest)
+                .Min();
+
+            string details = MissedMessages.Describe(
+                queuedCount,
+                teamsCount,
+                outlookCount,
+                oldest?.LocalDateTime,
+                DateTime.Now);
+
+            AddLog("Not sent yet: " + details + ". Nothing is sent until you answer.");
+
+            bool send = MissedMessagesDialog.Ask(MissedMessages.LaunchPrompt(details));
+
+            // Closed by Exit or by Windows shutting down: not an answer, keep everything.
+            if (_isShuttingDown || _sessionEnding)
+                return;
+
+            if (teamsCount > 0)
+                _teamsInboxWatcher.ResolveHeld(send);
+
+            _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+
+            await ResolveMissedOutlookAsync(send);
+
+            if (!send && queuedCount > 0 &&
+                !await DiscardQueuedAsync(backlog.Ids, "from before"))
+            {
+                // Better held than sent against the user's answer.
+                _sendingGate.Hold(SendingHold.StoppedByUser);
+                AddLog("Sending stays stopped so they are not sent. Press Resume sending to try again.");
+            }
+
+            AddLog(send
+                ? "You chose to send them; they go out oldest first."
+                : "You chose to start from now; only new messages are relayed.");
+        }
+        finally
+        {
+            if (!_isShuttingDown && !_sessionEnding)
+            {
+                _sendingGate.Release(SendingHold.LaunchQuestion);
+                UpdateSendingControls();
+            }
+        }
+    }
+
+    private async Task<bool> DiscardQueuedAsync(IReadOnlyList<string> ids, string what)
+    {
+        try
+        {
+            int removed = await _deliveryQueue.RemoveAsync(ids);
+            AddLog($"Discarded {NotificationsCount(removed)} {what}.");
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not discard the waiting notifications: " + ex.Message, ex);
+            return false;
+        }
+    }
+
+    private static string NotificationsCount(int count) =>
+        count == 1 ? "1 notification" : $"{count} notifications";
+
+    // ==========================================
+    // STOP / RESUME SENDING
+    // ==========================================
+
+    private async void SendingButton_Click(object sender, RoutedEventArgs e) =>
+        await ToggleSendingAsync();
+
+    private async Task ToggleSendingAsync()
+    {
+        if (_isShuttingDown || !_sendingToggleDebounce.TryAccept(DateTime.UtcNow))
             return;
 
-        DateTimeOffset? oldest = _launchMissedTeams
-            .Select(missed => (DateTimeOffset?)missed.SortTimeUtc)
-            .Concat(_missedOutlook.Select(toast => (DateTimeOffset?)toast.CreatedAt))
-            .Min();
+        if (_sendingGate.IsHeld(SendingHold.StoppedByUser))
+            await ResumeSendingAsync();
+        else
+            await StopSendingAsync();
+    }
 
-        string details = MissedMessages.Describe(
-            teamsCount,
-            outlookCount,
-            oldest?.LocalDateTime,
-            DateTime.Now);
+    private async Task StopSendingAsync()
+    {
+        _sendingGate.Hold(SendingHold.StoppedByUser);
+        UpdateSendingControls();
 
-        AddLog("Missed while closed: " + details + ". Waiting for your answer.");
+        int pending = 0;
+        try
+        {
+            pending = await _deliveryQueue.GetPendingCountAsync();
+        }
+        catch (Exception ex)
+        {
+            DebugTrace.Detail("Could not count waiting notifications", ex);
+        }
 
-        bool send = MissedMessagesDialog.Ask(details);
+        AddLog($"Sending stopped. {NotificationsCount(pending)} waiting; " +
+               "nothing goes to ntfy until you press Resume sending.");
+    }
 
-        if (_isShuttingDown)
+    private async Task ResumeSendingAsync()
+    {
+        if (_resumeInProgress)
             return;
 
-        if (teamsCount > 0)
-            _teamsInboxWatcher.ResolveHeld(send);
+        _resumeInProgress = true;
 
-        _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+        try
+        {
+            PendingSnapshot waiting = await _deliveryQueue.GetPendingSnapshotAsync();
 
-        await ResolveMissedOutlookAsync(send);
+            if (waiting.Ids.Count > 0)
+            {
+                DateTime? oldestLocal = waiting.OldestCreatedUtc is { } created
+                    ? DateTime.SpecifyKind(created, DateTimeKind.Utc).ToLocalTime()
+                    : null;
 
-        AddLog(send
-            ? "You chose to send the missed messages; they are sent oldest first."
-            : "You chose to skip the missed messages; relaying continues from now.");
+                bool send = MissedMessagesDialog.Ask(MissedMessages.ResumePrompt(
+                    MissedMessages.DescribeWaiting(waiting.Ids.Count, oldestLocal, DateTime.Now)));
+
+                // Closed by Exit or by Windows shutting down: not an answer, stay stopped.
+                if (_isShuttingDown || _sessionEnding)
+                    return;
+
+                if (!send &&
+                    !await DiscardQueuedAsync(waiting.Ids, "collected while sending was stopped"))
+                {
+                    AddLog("Sending stays stopped so they are not sent. Press Resume sending to try again.");
+                    return;
+                }
+            }
+
+            _sendingGate.Release(SendingHold.StoppedByUser);
+            UpdateSendingControls();
+            AddLog("Sending resumed.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not resume sending: " + ex.Message, ex);
+        }
+        finally
+        {
+            _resumeInProgress = false;
+        }
+    }
+
+    private void UpdateSendingControls()
+    {
+        bool stopped = _sendingGate.IsHeld(SendingHold.StoppedByUser);
+
+        SendingButton.Content = stopped ? "Resume sending" : "Stop sending";
+        SendingButton.Style = (Style)FindResource(stopped ? "Primary" : "DangerButton");
+        SendingButton.ToolTip = stopped
+            ? "Send to ntfy again. If notifications are waiting, you choose: send or discard them."
+            : "Stop sending anything to ntfy right now, including notifications already waiting.";
+
+        if (_traySendingItem is not null)
+            _traySendingItem.Text = stopped ? "Resume sending" : "Stop sending";
+
+        UpdateHeaderState();
+    }
+
+    // Stopping Teams or Outlook only stops capturing; say so when the queue is still sending.
+    private async Task HintWaitingAfterSourceStopAsync()
+    {
+        if (_sendingGate.IsHeld(SendingHold.StoppedByUser))
+            return;
+
+        try
+        {
+            int pending = await _deliveryQueue.GetPendingCountAsync();
+
+            if (pending > 0)
+            {
+                AddLog($"{NotificationsCount(pending)} still waiting to be sent to ntfy. " +
+                       "Press Stop sending to hold them.");
+            }
+        }
+        catch (Exception ex)
+        {
+            DebugTrace.Detail("Could not count waiting notifications", ex);
+        }
     }
 
     private async Task ResolveMissedOutlookAsync(bool send)
@@ -334,6 +535,13 @@ public partial class MainWindow : Window
             "Open NotiRelay",
             null,
             (_, _) => RestoreFromTray());
+
+        _traySendingItem = new System.Windows.Forms.ToolStripMenuItem(
+            "Stop sending",
+            null,
+            (_, _) => Dispatcher.BeginInvoke(new Action(() => _ = ToggleSendingAsync())));
+
+        menu.Items.Add(_traySendingItem);
 
         menu.Items.Add(
             "Exit",
@@ -733,6 +941,8 @@ public partial class MainWindow : Window
                 "Teams inbox monitoring stopped.", StatusKind.Neutral);
 
             AddLog("Teams inbox monitoring stopped by user.");
+
+            await HintWaitingAfterSourceStopAsync();
         }
         catch (Exception ex)
         {
@@ -921,6 +1131,8 @@ public partial class MainWindow : Window
     {
         StopForwarding(
             "Windows notification monitoring stopped by user.");
+
+        _ = HintWaitingAfterSourceStopAsync();
     }
 
     private async Task AutoStartAsync()
@@ -1358,6 +1570,24 @@ public partial class MainWindow : Window
             StateDot.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
             StateDot.Opacity = 1.0;
         }
+
+        // Stop sending wins over the sources: nothing reaches the phone while it is on.
+        if (_sendingGate.IsHeld(SendingHold.StoppedByUser))
+        {
+            StateBadge.Text = "SENDING STOPPED";
+            StatePill.ToolTip = "Nothing is sent to ntfy. Press Resume sending to continue.";
+            _trayIcon.Text = "NotiRelay — sending stopped";
+
+            StateBadge.Foreground = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xB9, 0x1C, 0x1C));
+            StateDot.Fill = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xEF, 0x44, 0x44));
+            StatePill.Background = new System.Windows.Media.SolidColorBrush(
+                System.Windows.Media.Color.FromRgb(0xFE, 0xF2, 0xF2));
+
+            StateDot.BeginAnimation(System.Windows.UIElement.OpacityProperty, null);
+            StateDot.Opacity = 1.0;
+        }
     }
 
     private void StartWithWindows_Toggled(object sender, RoutedEventArgs e)
@@ -1739,7 +1969,12 @@ public partial class MainWindow : Window
             "  Outlook monitoring running: " + YesNo(_isRunning),
             "  Teams monitoring running: " + YesNo(_isTeamsInboxRunning),
             "  Last active before this start: " + lastActive,
-            "  ntfy request timeout: " + _httpClient.Timeout.TotalSeconds + " s"
+            "  ntfy request timeout: " + _httpClient.Timeout.TotalSeconds + " s",
+            "  Sending: " + (_sendingGate.IsHeld(SendingHold.StoppedByUser)
+                ? "stopped by the user"
+                : _sendingGate.IsHeld(SendingHold.LaunchQuestion)
+                    ? "waiting for the launch question"
+                    : "on")
         });
 
         static string YesNo(bool value) => value ? "yes" : "no";

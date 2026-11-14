@@ -25,6 +25,10 @@ public static class NtfyErrors
         _ => ex.GetType().Name + ": " + ex.Message
     };
 
+    /// <summary>ntfy.sh is asking to slow down (429); the message itself is fine.</summary>
+    public static bool IsRateLimit(Exception ex) =>
+        ex is HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests };
+
     public static bool IsOutage(Exception ex) => ex switch
     {
         TaskCanceledException or TimeoutException => true,

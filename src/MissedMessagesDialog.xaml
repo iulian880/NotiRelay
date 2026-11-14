@@ -15,10 +15,26 @@
 
     <Border Style="{StaticResource Card}" Margin="16" Padding="24">
         <StackPanel>
-            <TextBlock Text="Missed while NotiRelay was closed"
-                       Style="{StaticResource FieldLabel}"
-                       Foreground="{StaticResource MutedBrush}"
-                       Margin="0,0,0,8"/>
+            <!-- Warning band: nothing is sent until this is answered -->
+            <Border Background="#FEF3C7"
+                    BorderBrush="#F59E0B"
+                    BorderThickness="4,0,0,0"
+                    CornerRadius="6"
+                    Padding="12,9"
+                    Margin="0,0,0,14">
+                <StackPanel Orientation="Horizontal">
+                    <TextBlock Text="⚠"
+                               FontSize="16"
+                               Foreground="#B45309"
+                               VerticalAlignment="Center"
+                               Margin="0,0,10,0"/>
+                    <TextBlock x:Name="HeadingText"
+                               FontWeight="Bold"
+                               FontSize="13"
+                               Foreground="#92400E"
+                               VerticalAlignment="Center"/>
+                </StackPanel>
+            </Border>
 
             <TextBlock x:Name="QuestionText"
                        FontSize="16"
@@ -32,19 +48,18 @@
                        Foreground="{StaticResource InkBrush}"
                        Margin="0,10,0,0"/>
 
-            <TextBlock Text="New messages are already being forwarded. No skips the missed ones for good."
+            <TextBlock x:Name="NoteText"
                        Style="{StaticResource Caption}"
                        TextWrapping="Wrap"
                        Margin="0,12,0,20"/>
 
             <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
-                <Button Content="Yes"
+                <Button x:Name="YesButton"
                         Style="{StaticResource Primary}"
-                        MinWidth="96"
-                        IsDefault="True"
+                        MinWidth="120"
                         Click="Yes_Click"/>
-                <Button Content="No"
-                        MinWidth="96"
+                <Button x:Name="NoButton"
+                        MinWidth="120"
                         Margin="0"
                         IsCancel="True"
                         Click="No_Click"/>
