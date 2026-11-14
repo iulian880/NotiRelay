@@ -13,10 +13,13 @@
         <SolidColorBrush x:Key="CardBorderBrush" Color="#E6EAF1" />
         <SolidColorBrush x:Key="InkBrush" Color="#0F172A" />
         <SolidColorBrush x:Key="MutedBrush" Color="#5B6678" />
-        <SolidColorBrush x:Key="SubtleBrush" Color="#94A3B8" />
+        <!-- Captions are real information (saved-topic state, footer): keep them at 4.5:1 on white. -->
+        <SolidColorBrush x:Key="SubtleBrush" Color="#6B7789" />
+        <SolidColorBrush x:Key="PlaceholderBrush" Color="#94A3B8" />
         <SolidColorBrush x:Key="FieldBrush" Color="#F8FAFC" />
         <SolidColorBrush x:Key="FieldBorderBrush" Color="#CBD5E1" />
         <SolidColorBrush x:Key="SuccessBrush" Color="#15803D" />
+        <SolidColorBrush x:Key="WarningBrush" Color="#B45309" />
         <SolidColorBrush x:Key="DangerBrush" Color="#DC2626" />
 
         <!-- Soft card shadow -->
@@ -192,6 +195,47 @@
                 <Setter.Value>
                     <DropShadowEffect BlurRadius="14" ShadowDepth="2" Direction="270"
                                       Opacity="0.38" Color="#2563EB" />
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <!-- Compact secondary button (Copy / Clear in the log header) -->
+        <Style x:Key="SmallButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="MinHeight" Value="28" />
+            <Setter Property="Padding" Value="12,4" />
+            <Setter Property="FontSize" Value="12" />
+            <Setter Property="Margin" Value="0" />
+        </Style>
+
+        <!-- Hint text drawn over an empty input -->
+        <Style x:Key="Placeholder" TargetType="TextBlock">
+            <Setter Property="Foreground" Value="{StaticResource PlaceholderBrush}" />
+            <Setter Property="Margin" Value="13,0,0,0" />
+            <Setter Property="VerticalAlignment" Value="Center" />
+            <Setter Property="IsHitTestVisible" Value="False" />
+        </Style>
+
+        <!-- Activity log rows: wrap long lines, dark-theme hover/selection -->
+        <Style x:Key="LogItem" TargetType="ListBoxItem">
+            <Setter Property="Padding" Value="8,3" />
+            <Setter Property="Foreground" Value="#CBD5E1" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ListBoxItem">
+                        <Border x:Name="bd" Background="Transparent" CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#1E293B" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="bd" Property="Background" Value="#334155" />
+                                <Setter Property="Foreground" Value="White" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
                 </Setter.Value>
             </Setter>
         </Style>

@@ -1,4 +1,4 @@
-
+using System.Diagnostics;
 using System.Net.Http;
 
 namespace NotiRelay;
@@ -11,6 +11,9 @@ public sealed class DeliveryWorker
 
     private readonly CancellationTokenSource _cancellation = new();
     private readonly object _lifecycleLock = new();
+
+    // Used only by the worker loop.
+    private readonly DeliveryOutage _outage = new();
 
     private Task? _workerTask;
     private bool _started;
@@ -85,6 +88,13 @@ public sealed class DeliveryWorker
             {
                 try
                 {
+                    // ntfy.sh unreachable: wait instead of failing every queued item.
+                    if (DateTime.UtcNow < _outage.PausedUntilUtc)
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                        continue;
+                    }
+
                     var item = await _queue.GetNextDueAsync();
 
                     if (item is null)
@@ -95,6 +105,8 @@ public sealed class DeliveryWorker
 
                         continue;
                     }
+
+                    var watch = Stopwatch.StartNew();
 
                     try
                     {
@@ -109,6 +121,15 @@ public sealed class DeliveryWorker
                             cancellationToken);
 
                         await _queue.MarkSentAsync(item.Id);
+
+                        DebugTrace.Line(
+                            $"Delivered queue item {item.Id} in {watch.ElapsedMilliseconds} ms " +
+                            $"(attempt {item.Attempts + 1}).");
+
+                        string? recovered = _outage.RecordSuccess();
+
+                        if (recovered is not null)
+                            Report(recovered);
 
                         int pending =
                             await _queue.GetPendingCountAsync();
@@ -127,15 +148,37 @@ public sealed class DeliveryWorker
                     catch (Exception ex)
                     {
                         int nextAttempt = item.Attempts + 1;
+                        string reason = NtfyErrors.Describe(ex);
 
-                        await _queue.MarkFailedAsync(
-                            item.Id,
-                            ex.GetType().Name);
+                        DebugTrace.Detail(
+                            $"Delivery attempt {nextAttempt} for queue item {item.Id} failed " +
+                            $"after {watch.ElapsedMilliseconds} ms " +
+                            $"(affects the whole queue: {NtfyErrors.IsOutage(ex)})",
+                            ex);
 
-                        Report(
-                            $"Delivery failed. Attempt {nextAttempt}. " +
-                            $"Automatic retry scheduled. " +
-                            $"Error: {ex.GetType().Name}");
+                        await _queue.MarkFailedAsync(item.Id, reason);
+
+                        if (NtfyErrors.IsOutage(ex))
+                        {
+                            // One line when the outage starts or changes, not one per item.
+                            string? line = _outage.RecordFailure(
+                                reason,
+                                await _queue.GetPendingCountAsync(),
+                                DateTime.UtcNow);
+
+                            if (line is not null)
+                                Report(line);
+
+                            DebugTrace.Line(
+                                "Delivery paused until " +
+                                $"{_outage.PausedUntilUtc.ToLocalTime():HH:mm:ss}.");
+                        }
+                        else
+                        {
+                            Report(
+                                $"Delivery rejected (attempt {nextAttempt}): {reason}. " +
+                                "Retrying later.");
+                        }
                     }
                 }
                 catch (OperationCanceledException)
@@ -145,6 +188,8 @@ public sealed class DeliveryWorker
                 }
                 catch (Exception ex)
                 {
+                    DebugTrace.Detail("Delivery worker error", ex);
+
                     Report(
                         $"Delivery worker error: {ex.GetType().Name}");
 

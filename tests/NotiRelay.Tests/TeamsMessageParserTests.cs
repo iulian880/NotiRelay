@@ -87,4 +87,31 @@ public class TeamsMessageParserTests
         Assert.True(ok, error);
         Assert.Equal("[Attachment]", msg!.Text);
     }
+
+    [Fact]
+    public void CompleteMessageWithoutText_IsReportedAsNothingToForward()
+    {
+        string json = Payload("<systemEventMessage/>")
+            .Replace("\"messageType\":\"message\"", "\"messageType\":\"systemEventMessage\"");
+
+        bool ok = TeamsMessageParser.TryParse(
+            json, out var msg, out var error, out var nothingToForward);
+
+        Assert.False(ok);
+        Assert.Null(msg);
+        Assert.NotNull(nothingToForward);
+        Assert.Equal("19:chat@thread.v2:1700000000000", MissedMessages.MessageKey(nothingToForward!));
+        Assert.Contains("systemEventMessage", error);
+    }
+
+    [Fact]
+    public void TruncatedFile_IsNotNothingToForward_SoItIsRetried()
+    {
+        string json = Payload("<p>Salut</p>")[..40];
+
+        bool ok = TeamsMessageParser.TryParse(json, out _, out _, out var nothingToForward);
+
+        Assert.False(ok);
+        Assert.Null(nothingToForward);
+    }
 }
