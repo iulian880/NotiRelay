@@ -17,6 +17,10 @@ public sealed class TeamsInboxWatcher
     private static readonly string BaselinePath =
         Path.Combine(StateDirectory, "teams-inbox-baseline.dat");
 
+    // A file that still cannot be parsed after this many attempts (about
+    // one minute at 10 s apart) is skipped instead of retried forever.
+    internal const int MaxProcessingAttempts = 6;
+
     private readonly DeliveryQueue _queue;
     private readonly Func<string> _topicProvider;
     private readonly Action<string> _log;
@@ -244,6 +248,8 @@ public sealed class TeamsInboxWatcher
                     state.LastWriteTimeUtc = info.LastWriteTimeUtc;
                     state.StableScans = 0;
                     state.Processed = false;
+                    state.FailedAttempts = 0;
+                    state.RetryAfterUtc = DateTime.MinValue;
                     continue;
                 }
 
@@ -296,7 +302,7 @@ public sealed class TeamsInboxWatcher
                     out string error) ||
                 message is null)
             {
-                RetryLater(state, error);
+                RetryLater(state, error, path);
                 return;
             }
 
@@ -314,7 +320,12 @@ public sealed class TeamsInboxWatcher
 
             if (string.IsNullOrWhiteSpace(topic))
             {
-                RetryLater(state, "ntfy topic is not configured.");
+                // Configuration problem, not a bad file: keep waiting.
+                RetryLater(
+                    state,
+                    "ntfy topic is not configured.",
+                    path,
+                    countAttempt: false);
                 return;
             }
 
@@ -354,6 +365,7 @@ public sealed class TeamsInboxWatcher
 
             state.Processed = true;
             state.RetryAfterUtc = DateTime.MinValue;
+            state.FailedAttempts = 0;
 
             Report(added
                 ? $"Teams message queued: {sender}. " +
@@ -370,12 +382,35 @@ public sealed class TeamsInboxWatcher
         {
             RetryLater(
                 state,
-                ex.GetType().Name + ": " + ex.Message);
+                ex.GetType().Name + ": " + ex.Message,
+                path);
         }
     }
 
-    private void RetryLater(FileState state, string reason)
+    private void RetryLater(
+        FileState state,
+        string reason,
+        string path,
+        bool countAttempt = true)
     {
+        if (countAttempt)
+            state.FailedAttempts++;
+
+        if (countAttempt &&
+            state.FailedAttempts >= MaxProcessingAttempts)
+        {
+            // Give up on this file version; a later change to the file
+            // (e.g. OneDrive finishing a sync) resets the state and retries.
+            state.Processed = true;
+            state.RetryAfterUtc = DateTime.MinValue;
+
+            Report(
+                $"Teams file skipped after {state.FailedAttempts} " +
+                $"failed attempts ({Path.GetFileName(path)}): {reason}");
+
+            return;
+        }
+
         state.RetryAfterUtc = DateTime.UtcNow.AddSeconds(10);
 
         if (DateTime.UtcNow - state.LastErrorLoggedUtc <
@@ -593,6 +628,7 @@ public sealed class TeamsInboxWatcher
         public bool Processed { get; set; }
         public DateTime RetryAfterUtc { get; set; }
         public DateTime LastErrorLoggedUtc { get; set; }
+        public int FailedAttempts { get; set; }
 
         public FileState(long length, DateTime lastWriteTimeUtc)
         {

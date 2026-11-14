@@ -34,6 +34,14 @@ public static class TeamsMessageParser
         @"<img\b[^>]*>",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
 
+    private static readonly Regex AttachmentTagRegex = new(
+        @"<attachment\b[^>]*>.*?</attachment\s*>|<attachment\b[^>]*/?>",
+        RegexOptions.IgnoreCase | RegexOptions.Singleline |
+        RegexOptions.Compiled);
+
+    private const string ImagePlaceholder = "[Image]";
+    private const string AttachmentPlaceholder = "[Attachment]";
+
     private static readonly Regex AltAttributeRegex = new(
         @"\balt\s*=\s*(?:""([^""]*)""|'([^']*)'|([^\s>]+))",
         RegexOptions.IgnoreCase | RegexOptions.Compiled);
@@ -138,13 +146,32 @@ public static class TeamsMessageParser
                     GetString(body, "contentType") ?? string.Empty;
             }
 
-            if (string.IsNullOrWhiteSpace(content))
-            {
-                error = "Message has no readable body content.";
-                return false;
-            }
+            // Files shared in Teams arrive as an <attachment> placeholder in
+            // the body plus metadata in message.attachments. Without this the
+            // body has no text left and the message can never be parsed.
+            List<string> attachmentNames = GetAttachmentNames(message);
 
-            string text = ConvertToPlainText(content, contentType);
+            bool hasAttachmentTag =
+                AttachmentTagRegex.IsMatch(content);
+
+            string text = string.IsNullOrWhiteSpace(content)
+                ? string.Empty
+                : ConvertToPlainText(content, contentType);
+
+            if (attachmentNames.Count > 0)
+            {
+                string files = string.Join(
+                    "\n",
+                    attachmentNames.Select(name => "\U0001F4CE " + name));
+
+                text = string.IsNullOrWhiteSpace(text)
+                    ? files
+                    : text + "\n" + files;
+            }
+            else if (string.IsNullOrWhiteSpace(text) && hasAttachmentTag)
+            {
+                text = AttachmentPlaceholder;
+            }
 
             if (string.IsNullOrWhiteSpace(text))
             {
@@ -211,6 +238,30 @@ public static class TeamsMessageParser
             : null;
     }
 
+    private static List<string> GetAttachmentNames(JsonElement message)
+    {
+        var names = new List<string>();
+
+        if (!message.TryGetProperty("attachments", out JsonElement list) ||
+            list.ValueKind != JsonValueKind.Array)
+        {
+            return names;
+        }
+
+        foreach (JsonElement attachment in list.EnumerateArray())
+        {
+            if (attachment.ValueKind != JsonValueKind.Object)
+                continue;
+
+            string? name = GetString(attachment, "name");
+
+            if (!string.IsNullOrWhiteSpace(name))
+                names.Add(NormalizeText(name));
+        }
+
+        return names;
+    }
+
     private static string ConvertToPlainText(
         string content,
         string contentType)
@@ -233,9 +284,18 @@ public static class TeamsMessageParser
         text = EmojiTagRegex.Replace(text, match =>
             ExtractAltText(match.Value));
 
-        // Convert image alt text, if present.
+        // File placeholders; file names are added from message.attachments.
+        text = AttachmentTagRegex.Replace(text, string.Empty);
+
+        // Convert image alt text, or a placeholder for images without one.
         text = ImageTagRegex.Replace(text, match =>
-            ExtractAltText(match.Value));
+        {
+            string alt = ExtractAltText(match.Value);
+
+            return string.IsNullOrWhiteSpace(alt)
+                ? " " + ImagePlaceholder + " "
+                : alt;
+        });
 
         // Preserve meaningful line breaks.
         text = LineBreakRegex.Replace(text, "\n");

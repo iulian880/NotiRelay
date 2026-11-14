@@ -33,7 +33,9 @@ public sealed class NtfyClient
             Encoding.UTF8,
             "text/plain");
 
-        request.Headers.TryAddWithoutValidation("Title", title);
+        request.Headers.TryAddWithoutValidation(
+            "Title",
+            EncodeHeaderValue(title));
         request.Headers.TryAddWithoutValidation("Priority", priority);
 
         using HttpResponseMessage response =
@@ -43,6 +45,19 @@ public sealed class NtfyClient
                 cancellationToken);
 
         response.EnsureSuccessStatusCode();
+    }
+
+    // HttpClient rejects non-ASCII header values (e.g. a sender name with
+    // diacritics), which made every delivery attempt fail. ntfy accepts
+    // RFC 2047 encoded-words, so non-ASCII values are sent that way.
+    private static string EncodeHeaderValue(string value)
+    {
+        if (value.All(c => c >= 0x20 && c < 0x7F))
+            return value;
+
+        return "=?UTF-8?B?" +
+            Convert.ToBase64String(Encoding.UTF8.GetBytes(value)) +
+            "?=";
     }
 
     public Task SendSyntheticTestAsync(
