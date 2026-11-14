@@ -263,6 +263,8 @@ public sealed class TeamsInboxWatcher
             }
             catch (Exception ex)
             {
+                DebugTrace.Detail("Teams inbox worker error", ex);
+
                 Report(
                     "Teams inbox worker error: " +
                     ex.GetType().Name + ": " + ex.Message);
@@ -382,6 +384,7 @@ public sealed class TeamsInboxWatcher
         }
         catch (Exception ex)
         {
+            DebugTrace.Detail("Cannot scan Teams inbox", ex);
             Report("Cannot scan Teams inbox: " + ex.Message);
             return;
         }
@@ -465,6 +468,9 @@ public sealed class TeamsInboxWatcher
             }
             catch (Exception ex)
             {
+                DebugTrace.Detail(
+                    $"Teams file processing error ({Path.GetFileName(path)})", ex);
+
                 Report(
                     $"Teams file processing error " +
                     $"({Path.GetFileName(path)}): {ex.Message}");
@@ -574,6 +580,9 @@ public sealed class TeamsInboxWatcher
         }
         catch (Exception ex)
         {
+            DebugTrace.Detail(
+                $"Teams file will be retried ({Path.GetFileName(path)})", ex);
+
             RetryLater(
                 state,
                 ex.GetType().Name + ": " + ex.Message,

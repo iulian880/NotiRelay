@@ -241,6 +241,19 @@
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
                                     VerticalAlignment="Center">
+                            <Button x:Name="DebugButton"
+                                    Content="Debugging"
+                                    Style="{StaticResource SmallButton}"
+                                    Margin="0,0,6,0"
+                                    AutomationProperties.Name="Debugging"
+                                    Click="DebugButton_Click"/>
+                            <Button x:Name="ShowDebugFileButton"
+                                    Content="Show file"
+                                    Style="{StaticResource SmallButton}"
+                                    Margin="0,0,6,0"
+                                    Visibility="Collapsed"
+                                    ToolTip="Show the debug log in File Explorer"
+                                    Click="ShowDebugFile_Click"/>
                             <Button Content="Copy"
                                     Style="{StaticResource SmallButton}"
                                     Margin="0,0,6,0"

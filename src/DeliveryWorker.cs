@@ -1,4 +1,4 @@
-
+using System.Diagnostics;
 using System.Net.Http;
 
 namespace NotiRelay;
@@ -106,6 +106,8 @@ public sealed class DeliveryWorker
                         continue;
                     }
 
+                    var watch = Stopwatch.StartNew();
+
                     try
                     {
                         var client = new NtfyClient(
@@ -119,6 +121,10 @@ public sealed class DeliveryWorker
                             cancellationToken);
 
                         await _queue.MarkSentAsync(item.Id);
+
+                        DebugTrace.Line(
+                            $"Delivered queue item {item.Id} in {watch.ElapsedMilliseconds} ms " +
+                            $"(attempt {item.Attempts + 1}).");
 
                         string? recovered = _outage.RecordSuccess();
 
@@ -144,6 +150,12 @@ public sealed class DeliveryWorker
                         int nextAttempt = item.Attempts + 1;
                         string reason = NtfyErrors.Describe(ex);
 
+                        DebugTrace.Detail(
+                            $"Delivery attempt {nextAttempt} for queue item {item.Id} failed " +
+                            $"after {watch.ElapsedMilliseconds} ms " +
+                            $"(affects the whole queue: {NtfyErrors.IsOutage(ex)})",
+                            ex);
+
                         await _queue.MarkFailedAsync(item.Id, reason);
 
                         if (NtfyErrors.IsOutage(ex))
@@ -156,6 +168,10 @@ public sealed class DeliveryWorker
 
                             if (line is not null)
                                 Report(line);
+
+                            DebugTrace.Line(
+                                "Delivery paused until " +
+                                $"{_outage.PausedUntilUtc.ToLocalTime():HH:mm:ss}.");
                         }
                         else
                         {
@@ -172,6 +188,8 @@ public sealed class DeliveryWorker
                 }
                 catch (Exception ex)
                 {
+                    DebugTrace.Detail("Delivery worker error", ex);
+
                     Report(
                         $"Delivery worker error: {ex.GetType().Name}");
 

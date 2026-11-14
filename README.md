@@ -24,6 +24,7 @@ You subscribe to the same topic in the ntfy app on your phone and receive the te
 - **Baseline on first start**: on the very first run, existing inbox files and toasts are ignored.
 - **System tray**, minimize-to-tray, and optional **Start with Windows** (per-user `HKCU\…\Run`, launches straight into the tray).
 - Message bodies are not written to the local activity log.
+- **Debugging** button (Activity log): writes everything to `NotiRelay-debug.log` next to the exe (or `%LOCALAPPDATA%\NotiRelay` if that folder is read-only): the activity log with milliseconds, full error details, and a read-only network check for ntfy.sh (proxy, DNS, port 443, HTTPS health). The topic is masked, message text is never written, it stays on across restarts until turned off, and it is capped at 2 × 5 MB.
 - Single-file self-contained build, or a sparse-MSIX package for the notification-listener capability — both per-user, no admin.
 
 ## Screenshots
@@ -95,6 +96,10 @@ Sparse-identity package for the notification listener (per-user, no admin): run 
 1. Pick a long, unguessable topic (anyone who knows it can read what is posted to it) and subscribe to it in the ntfy app, or at `https://ntfy.sh/<topic>`.
 2. Paste the topic (or its `https://ntfy.sh/<topic>` link) into the app and press **Save topic** or Enter. It is validated first, so a bad value never replaces the saved one, then stored DPAPI-encrypted in `%LOCALAPPDATA%\NotiRelay`. The window confirms it with the last four characters (`✓ Saved: ••••9q2x`).
 3. Press **Send test**. For Outlook, tick the confirmation once (it is remembered) and press **Start Outlook monitoring**.
+
+### Troubleshooting
+
+If notifications stop reaching your phone, press **Debugging** in the Activity log, wait a minute (or restart the app so startup is captured), then press **Show file** and send `NotiRelay-debug.log`. The on-screen log also shows a one-line *Network check* result. Press **Debugging ON** again to stop.
 
 ## Notes
 

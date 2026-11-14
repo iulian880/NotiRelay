@@ -1,4 +1,6 @@
 
+using System.Diagnostics;
+using System.Globalization;
 using System.IO;
 using System.Net.Http;
 using System.Reflection;
@@ -43,6 +45,11 @@ public partial class MainWindow : Window
     private bool _topicRevealed;
     private bool _trayHintShown;
     private bool _heartbeatErrorLogged;
+
+    // Debug log: the topic to mask (refreshed whenever the saved topic changes) and
+    // whether a write failure was already shown on screen.
+    private string? _debugTopic;
+    private bool _debugWriteWarned;
 
     // When NotiRelay last ran, read before this run overwrites it: toasts newer than
     // this were missed while the app was closed.
@@ -97,6 +104,14 @@ public partial class MainWindow : Window
 
         RefreshTopicState();
         ShowInitialNtfyStatus();
+
+        HookUnhandledExceptionsIntoDebugLog();
+
+        // Debugging stays on across restarts, so startup (when the queue is flushed) is captured.
+        if (_settings.DebugLoggingEnabled)
+            StartDebugLog("NotiRelay started with Debugging on");
+        else
+            UpdateDebugButton();
 
         _pollTimer = new DispatcherTimer
         {
@@ -183,7 +198,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AddLog("A notification could not be checked for missed messages: " + ex.Message);
+            AddLog("A notification could not be checked for missed messages: " + ex.Message, ex);
         }
     }
 
@@ -261,7 +276,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AddLog("Could not queue the missed Outlook notifications: " + ex.Message);
+            AddLog("Could not queue the missed Outlook notifications: " + ex.Message, ex);
         }
     }
 
@@ -278,7 +293,7 @@ public partial class MainWindow : Window
                 return;
 
             _heartbeatErrorLogged = true;
-            AddLog("Could not record when NotiRelay last ran: " + ex.Message);
+            AddLog("Could not record when NotiRelay last ran: " + ex.Message, ex);
         }
     }
 
@@ -404,7 +419,7 @@ public partial class MainWindow : Window
         {
             AddLog(
                 "Teams watcher shutdown error: " +
-                ex.GetType().Name + ": " + ex.Message);
+                ex.GetType().Name + ": " + ex.Message, ex);
         }
 
         try
@@ -417,12 +432,14 @@ public partial class MainWindow : Window
         {
             AddLog(
                 "Delivery worker shutdown error: " +
-                ex.GetType().Name + ": " + ex.Message);
+                ex.GetType().Name + ": " + ex.Message, ex);
         }
 
         // All background services have now been awaited.
         _allowExit = true;
         _trayIcon.Visible = false;
+
+        DebugTrace.Line("=== NotiRelay exiting ===");
 
         Close();
     }
@@ -562,7 +579,7 @@ public partial class MainWindow : Window
                     : "Could not save the topic: " + ex.Message,
                 StatusKind.Error);
 
-            AddLog("ntfy topic not saved: " + ex.Message);
+            AddLog("ntfy topic not saved: " + ex.Message, ex);
             FocusTopicInput();
         }
     }
@@ -595,7 +612,7 @@ public partial class MainWindow : Window
         {
             SetStatus(NtfyStatus, "Test failed: " + NtfyErrors.Describe(ex) + ".", StatusKind.Error);
 
-            AddLog("ntfy test failed: " + ex.Message);
+            AddLog("ntfy test failed: " + ex.Message, ex);
         }
         finally
         {
@@ -674,7 +691,7 @@ public partial class MainWindow : Window
 
             AddLog(
                 "Teams inbox configuration error: " +
-                ex.Message);
+                ex.Message, ex);
         }
     }
 
@@ -696,7 +713,7 @@ public partial class MainWindow : Window
 
             AddLog(
                 "Teams monitoring start failed: " +
-                ex.Message);
+                ex.Message, ex);
         }
     }
 
@@ -724,7 +741,7 @@ public partial class MainWindow : Window
 
             AddLog(
                 "Teams monitoring stop failed: " +
-                ex.Message);
+                ex.Message, ex);
         }
     }
 
@@ -820,7 +837,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            AddLog("Could not look for missed Teams messages: " + ex.Message);
+            AddLog("Could not look for missed Teams messages: " + ex.Message, ex);
         }
 
         try
@@ -835,7 +852,7 @@ public partial class MainWindow : Window
 
             AddLog(
                 "Teams auto-start failed: " +
-                ex.Message);
+                ex.Message, ex);
         }
     }
 
@@ -890,7 +907,7 @@ public partial class MainWindow : Window
         {
             _settings.OutlookForwardingConfirmed = previous;
 
-            AddLog("Could not save the Outlook confirmation: " + ex.Message);
+            AddLog("Could not save the Outlook confirmation: " + ex.Message, ex);
             SetStatus(ListenerStatus,
                 "Could not save the confirmation: " + ex.Message, StatusKind.Error);
         }
@@ -1008,7 +1025,7 @@ public partial class MainWindow : Window
 
             AddLog(
                 "Windows notification start failed: " +
-                ex.Message);
+                ex.Message, ex);
 
             return false;
         }
@@ -1111,7 +1128,7 @@ public partial class MainWindow : Window
         {
             AddLog(
                 "Windows notification detection/queue error: " +
-                ex.Message);
+                ex.Message, ex);
         }
         finally
         {
@@ -1368,7 +1385,7 @@ public partial class MainWindow : Window
             StartWithWindowsCheckBox.IsChecked = !enable;
             _suppressStartupToggle = false;
 
-            AddLog("Could not change the start-with-Windows setting: " + ex.Message);
+            AddLog("Could not change the start-with-Windows setting: " + ex.Message, ex);
 
             System.Windows.MessageBox.Show(
                 "Could not change the start-with-Windows setting:\n" + ex.Message,
@@ -1381,6 +1398,8 @@ public partial class MainWindow : Window
     /// <summary>Shows what is really stored: nothing, a readable topic (masked), or an unreadable one.</summary>
     private void RefreshTopicState()
     {
+        _debugTopic = _settings.TryGetTopic(out string savedTopic) ? savedTopic : null;
+
         if (!_settings.HasStoredTopic)
         {
             TopicSavedLabel.Text = "No topic saved yet.";
@@ -1484,7 +1503,7 @@ public partial class MainWindow : Window
         catch (Exception ex)
         {
             // The clipboard can be briefly locked by another application.
-            AddLog("Could not copy the log: " + ex.Message);
+            AddLog("Could not copy the log: " + ex.Message, ex);
         }
     }
 
@@ -1508,6 +1527,9 @@ public partial class MainWindow : Window
             return;
         }
 
+        // Error messages can contain a proxy address with its user and password.
+        message = DebugReport.HideUrlCredentials(message);
+
         var line = $"[{DateTime.Now:HH:mm:ss}] {message}";
 
         ActivityList.Items.Insert(0, line);
@@ -1515,6 +1537,263 @@ public partial class MainWindow : Window
         while (ActivityList.Items.Count > 150)
             ActivityList.Items.RemoveAt(
                 ActivityList.Items.Count - 1);
+
+        MirrorToDebugLog(message);
+    }
+
+    // Same line on screen; the debug log also gets the full error (cause chain, stack trace).
+    private void AddLog(string message, Exception ex)
+    {
+        if (!Dispatcher.CheckAccess())
+        {
+            if (!Dispatcher.HasShutdownStarted &&
+                !Dispatcher.HasShutdownFinished)
+            {
+                Dispatcher.BeginInvoke(
+                    new Action(() => AddLog(message, ex)));
+            }
+
+            return;
+        }
+
+        AddLog(message);
+        DebugTrace.Detail("Error details for the line above:", ex);
+    }
+
+    // ==========================================
+    // DEBUG LOG
+    // ==========================================
+
+    private void DebugButton_Click(object sender, RoutedEventArgs e)
+    {
+        if (DebugTrace.IsEnabled)
+            StopDebugLog();
+        else
+            StartDebugLog("turned on with the Debugging button");
+    }
+
+    private void ShowDebugFile_Click(object sender, RoutedEventArgs e)
+    {
+        string? path = DebugTrace.File?.FilePath;
+        if (path is null)
+            return;
+
+        try
+        {
+            Process.Start("explorer.exe", $"/select,\"{path}\"");
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not open File Explorer: " + ex.Message, ex);
+        }
+    }
+
+    private void StartDebugLog(string reason)
+    {
+        string? exeFolder = Path.GetDirectoryName(Environment.ProcessPath);
+        string fallbackFolder = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "NotiRelay");
+
+        var folders = new List<string>();
+        if (!string.IsNullOrEmpty(exeFolder))
+            folders.Add(exeFolder);
+        folders.Add(fallbackFolder);
+
+        DebugLogFile? file = DebugLogFile.Open(folders, () => _debugTopic, out string? error);
+
+        if (file is null)
+        {
+            UpdateDebugButton();
+            AddLog("Debugging could not start: " + error);
+            return;
+        }
+
+        DebugTrace.Attach(file);
+        _debugWriteWarned = false;
+
+        DebugTrace.Line(DebugReport.SessionHeader(
+            reason, GetAppVersion(), Environment.ProcessPath, file.FilePath));
+        DebugTrace.Line(DebugSettingsSummary());
+        DebugTrace.Line(ScreenLogSnapshot());
+
+        SaveDebugSetting(true);
+        UpdateDebugButton();
+
+        bool usedFallback = !string.Equals(
+            Path.GetDirectoryName(file.FilePath), exeFolder, StringComparison.OrdinalIgnoreCase);
+
+        AddLog("Debugging ON. Writing everything to " + file.FilePath +
+               (usedFallback ? " (the NotiRelay.exe folder is not writable)." : "."));
+
+        _ = RunNetworkCheckAsync();
+    }
+
+    private void StopDebugLog()
+    {
+        string? path = DebugTrace.File?.FilePath;
+
+        DebugTrace.Line("=== Debugging turned off ===");
+        DebugTrace.Detach();
+
+        SaveDebugSetting(false);
+        UpdateDebugButton();
+
+        AddLog("Debugging OFF. The debug log stays at " + path + ".");
+    }
+
+    private void SaveDebugSetting(bool enabled)
+    {
+        if (_settings.DebugLoggingEnabled == enabled)
+            return;
+
+        _settings.DebugLoggingEnabled = enabled;
+
+        try
+        {
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not remember the Debugging setting: " + ex.Message, ex);
+        }
+    }
+
+    private void UpdateDebugButton()
+    {
+        DebugLogFile? file = DebugTrace.File;
+
+        if (file is null)
+        {
+            DebugButton.Content = "Debugging";
+            DebugButton.ClearValue(BackgroundProperty);
+            DebugButton.ClearValue(BorderBrushProperty);
+            DebugButton.ClearValue(ForegroundProperty);
+            DebugButton.ToolTip =
+                "Write everything that happens to NotiRelay-debug.log next to NotiRelay.exe";
+            ShowDebugFileButton.Visibility = Visibility.Collapsed;
+        }
+        else
+        {
+            DebugButton.Content = "Debugging ON";
+            DebugButton.Background = Brush("WarningBrush");
+            DebugButton.BorderBrush = Brush("WarningBrush");
+            DebugButton.Foreground = System.Windows.Media.Brushes.White;
+            DebugButton.ToolTip = "Writing to " + file.FilePath + ". Click to stop.";
+            ShowDebugFileButton.Visibility = Visibility.Visible;
+        }
+    }
+
+    private void MirrorToDebugLog(string message)
+    {
+        if (DebugTrace.Line(message))
+        {
+            _debugWriteWarned = false;
+            return;
+        }
+
+        if (_debugWriteWarned)
+            return;
+
+        // Shown once, straight on screen (not through AddLog, which would try the file again).
+        _debugWriteWarned = true;
+        ActivityList.Items.Insert(
+            0,
+            $"[{DateTime.Now:HH:mm:ss}] Debug log could not be written: {DebugTrace.File?.LastError}");
+    }
+
+    private string DebugSettingsSummary()
+    {
+        string topic = !_settings.HasStoredTopic
+            ? "not set"
+            : _settings.TryGetTopic(out string saved)
+                ? DebugLogFile.MaskTopic(saved) + (NtfyTopic.IsWeak(saved) ? " (short)" : string.Empty)
+                : "saved but cannot be decrypted on this Windows account";
+
+        string teamsFolder = string.IsNullOrWhiteSpace(_settings.TeamsInboxPath)
+            ? "not set"
+            : _settings.TeamsInboxPath +
+              (Directory.Exists(_settings.TeamsInboxPath) ? string.Empty : " (folder not found)");
+
+        string lastActive = _previousActiveUtc is { } when
+            ? when.ToLocalTime().ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture)
+            : "never";
+
+        string startWithWindows;
+        try
+        {
+            startWithWindows = YesNo(StartupManager.IsEnabled());
+        }
+        catch (Exception ex)
+        {
+            startWithWindows = "unknown (" + ex.Message + ")";
+        }
+
+        return string.Join(Environment.NewLine, new[]
+        {
+            "Settings:",
+            "  ntfy topic: " + topic,
+            "  Teams inbox folder: " + teamsFolder,
+            "  Outlook forwarding confirmed: " + YesNo(_settings.OutlookForwardingConfirmed),
+            "  Start with Windows: " + startWithWindows,
+            "  Outlook monitoring running: " + YesNo(_isRunning),
+            "  Teams monitoring running: " + YesNo(_isTeamsInboxRunning),
+            "  Last active before this start: " + lastActive,
+            "  ntfy request timeout: " + _httpClient.Timeout.TotalSeconds + " s"
+        });
+
+        static string YesNo(bool value) => value ? "yes" : "no";
+    }
+
+    private string ScreenLogSnapshot()
+    {
+        // The list shows newest first; the file reads oldest first.
+        List<string> lines = ActivityList.Items
+            .Cast<object>()
+            .Select(item => "  " + item)
+            .Reverse()
+            .ToList();
+
+        return lines.Count == 0
+            ? "Activity log on screen: (empty)"
+            : "Activity log on screen so far (oldest first):" + Environment.NewLine +
+              string.Join(Environment.NewLine, lines);
+    }
+
+    private async Task RunNetworkCheckAsync()
+    {
+        try
+        {
+            int pending = await _deliveryQueue.GetPendingCountAsync();
+            DebugTrace.Line($"Delivery queue: {pending} waiting.");
+
+            // Proxy auto-detection can block for seconds, so the whole check runs off the UI thread.
+            NetworkProbeResult result = await Task.Run(
+                () => NetworkProbe.CreateDefault(_httpClient).RunAsync(CancellationToken.None));
+
+            DebugTrace.Line(string.Join(Environment.NewLine, result.Lines));
+            AddLog("Network check: " + result.Summary + " Details are in the debug log.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("Network check could not run: " + ex.Message, ex);
+        }
+    }
+
+    private void HookUnhandledExceptionsIntoDebugLog()
+    {
+        // Only recorded; the app's existing behaviour for these errors does not change.
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+        {
+            if (e.ExceptionObject is Exception ex)
+                DebugTrace.Detail("Unhandled exception (NotiRelay is closing)", ex);
+        };
+
+        TaskScheduler.UnobservedTaskException += (_, e) =>
+            DebugTrace.Detail("Unobserved background task exception", e.Exception);
+
+        System.Windows.Application.Current.DispatcherUnhandledException += (_, e) =>
+            DebugTrace.Detail("Unhandled exception on the UI thread", e.Exception);
     }
 
     // ==========================================

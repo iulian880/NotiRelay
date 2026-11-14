@@ -32,6 +32,9 @@ public sealed class AppSettings
     // toasts newer than this count as missed while the app was closed.
     public DateTimeOffset? LastActiveUtc { get; set; }
 
+    // The Debugging button: kept on across restarts until the user turns it off.
+    public bool DebugLoggingEnabled { get; set; }
+
     /// <summary>Set when settings.json existed but could not be read.</summary>
     [JsonIgnore]
     public string? LoadWarning { get; private set; }

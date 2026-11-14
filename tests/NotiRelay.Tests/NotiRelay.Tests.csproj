@@ -14,6 +14,9 @@
     <Compile Include="../../src/MissedMessages.cs" Link="Linked/MissedMessages.cs" />
     <Compile Include="../../src/NtfyErrors.cs" Link="Linked/NtfyErrors.cs" />
     <Compile Include="../../src/DeliveryOutage.cs" Link="Linked/DeliveryOutage.cs" />
+    <Compile Include="../../src/DebugLogFile.cs" Link="Linked/DebugLogFile.cs" />
+    <Compile Include="../../src/DebugReport.cs" Link="Linked/DebugReport.cs" />
+    <Compile Include="../../src/NetworkProbe.cs" Link="Linked/NetworkProbe.cs" />
   </ItemGroup>
 
   <ItemGroup>
