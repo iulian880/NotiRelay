@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="NotiRelay"
         Icon="Assets/NotiRelay.ico"
-        Height="900"
+        Height="860"
         Width="880"
-        MinHeight="760"
+        MinHeight="560"
         MinWidth="720"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource AppBackgroundBrush}"
@@ -19,7 +19,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
-                <RowDefinition Height="*"/>
+                <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
@@ -50,7 +50,7 @@
                                        FontSize="26"
                                        FontWeight="Bold"
                                        Foreground="{StaticResource InkBrush}"/>
-                            <TextBlock Text="Microsoft Teams → OneDrive → ntfy → iPhone"
+                            <TextBlock Text="Teams &amp; Outlook → ntfy → your phone"
                                        Foreground="{StaticResource MutedBrush}"
                                        FontSize="13"
                                        Margin="0,3,0,0"/>
@@ -88,24 +88,53 @@
                     </StackPanel>
 
                     <TextBlock Style="{StaticResource SectionDesc}"
-                               Text="Enter the topic you subscribed to in the ntfy app on your iPhone. The topic is encrypted for your Windows user account."/>
+                               Text="Enter the topic you subscribed to in the ntfy app on your phone. Anyone who knows the topic can read what is sent to it, so use a long, random one. It is stored encrypted for your Windows account."/>
 
                     <TextBlock Text="ntfy topic" Style="{StaticResource FieldLabel}"/>
-                    <PasswordBox x:Name="TopicBox"/>
+                    <DockPanel Margin="0,0,0,8">
+                        <Button x:Name="RevealTopicButton"
+                                DockPanel.Dock="Right"
+                                Content="Show"
+                                MinWidth="72"
+                                Margin="8,0,0,0"
+                                ToolTip="Show or hide what you typed"
+                                Click="RevealTopic_Click"/>
+                        <Grid>
+                            <PasswordBox x:Name="TopicBox"
+                                         Margin="0"
+                                         AutomationProperties.Name="ntfy topic"
+                                         PasswordChanged="TopicInput_Changed"
+                                         PreviewKeyDown="TopicInput_PreviewKeyDown"/>
+                            <TextBox x:Name="TopicPlainBox"
+                                     Margin="0"
+                                     Visibility="Collapsed"
+                                     AutomationProperties.Name="ntfy topic"
+                                     TextChanged="TopicInput_Changed"
+                                     PreviewKeyDown="TopicInput_PreviewKeyDown"/>
+                            <TextBlock x:Name="TopicPlaceholder"
+                                       Text="Paste a topic name or an https://ntfy.sh/… link"
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
+                    </DockPanel>
 
                     <TextBlock x:Name="TopicSavedLabel"
-                               Text="No saved topic"
+                               Text="No topic saved yet."
                                Style="{StaticResource Caption}"
-                               Margin="0,0,0,12"/>
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,14"/>
 
                     <WrapPanel>
-                        <Button Content="Save settings" Style="{StaticResource Primary}"
+                        <Button x:Name="SaveTopicButton"
+                                Content="Save topic"
+                                Style="{StaticResource Primary}"
                                 Click="SaveSettings_Click"/>
-                        <Button Content="Test ntfy" Click="TestNtfy_Click"/>
+                        <Button x:Name="TestNtfyButton"
+                                Content="Send test"
+                                ToolTip="Sends a test notification to the saved topic"
+                                Click="TestNtfy_Click"/>
                     </WrapPanel>
 
                     <TextBlock x:Name="NtfyStatus"
-                               Text="ntfy is not configured."
                                Style="{StaticResource StatusText}"
                                Margin="0,12,0,0"/>
                 </StackPanel>
@@ -130,9 +159,16 @@
                                 Content="Browse…"
                                 Margin="8,0,0,0"
                                 Click="BrowseTeamsInbox_Click"/>
-                        <TextBox x:Name="TeamsInboxPathBox"
-                                 IsReadOnly="True"
-                                 Margin="0"/>
+                        <Grid>
+                            <TextBox x:Name="TeamsInboxPathBox"
+                                     IsReadOnly="True"
+                                     AutomationProperties.Name="Teams inbox folder"
+                                     TextChanged="TeamsInboxPath_Changed"
+                                     Margin="0"/>
+                            <TextBlock x:Name="TeamsInboxPlaceholder"
+                                       Text="No folder selected. Press Browse… to pick the synced inbox folder."
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
                     </DockPanel>
 
                     <WrapPanel>
@@ -157,68 +193,90 @@
                 </StackPanel>
             </Border>
 
-            <!-- WINDOWS NOTIFICATION LISTENER -->
+            <!-- OUTLOOK (WINDOWS NOTIFICATION LISTENER) -->
             <Border Grid.Row="3" Style="{StaticResource Card}">
                 <StackPanel>
                     <StackPanel Orientation="Horizontal">
                         <Border Style="{StaticResource StepBadge}">
                             <TextBlock Text="3" Style="{StaticResource StepNumber}"/>
                         </Border>
-                        <TextBlock Text="Windows notification listener" Style="{StaticResource SectionTitle}"/>
+                        <TextBlock Text="Outlook notifications" Style="{StaticResource SectionTitle}"/>
                     </StackPanel>
 
                     <TextBlock Style="{StaticResource SectionDesc}"
-                               Text="Optional. Forward Outlook desktop notifications (Windows toasts). This works independently of the Teams inbox integration above."/>
+                               Text="Optional. Forward Outlook desktop notifications (Windows toasts) through the Windows notification listener. This works independently of the Teams integration above."/>
 
                     <Border Background="#F8FAFC" BorderBrush="{StaticResource CardBorderBrush}"
                             BorderThickness="1" CornerRadius="10" Padding="14,12" Margin="0,0,0,12">
                         <CheckBox x:Name="AuthorizationCheckBox"
-                                  IsChecked="True"
+                                  Checked="OutlookConsent_Toggled"
+                                  Unchecked="OutlookConsent_Toggled"
                                   Foreground="{StaticResource InkBrush}">
-                            <TextBlock Text="I confirm that I want to forward notifications detected by this Windows listener to my ntfy topic."
+                            <TextBlock Text="I confirm that I want to forward notifications detected by this Windows listener to my ntfy topic. (Remembered; untick to stop.)"
                                        TextWrapping="Wrap" FontSize="12.5"/>
                         </CheckBox>
                     </Border>
 
                     <WrapPanel>
                         <Button x:Name="StartButton"
-                                Content="Start monitoring"
+                                Content="Start Outlook monitoring"
                                 Style="{StaticResource Primary}"
                                 Click="Start_Click"/>
                         <Button x:Name="StopButton"
-                                Content="Stop monitoring"
+                                Content="Stop Outlook monitoring"
                                 IsEnabled="False"
                                 Click="Stop_Click"/>
                     </WrapPanel>
 
                     <TextBlock x:Name="ListenerStatus"
-                               Text="Windows notification monitoring is stopped."
+                               Text="Outlook monitoring is stopped."
                                Style="{StaticResource StatusText}"
                                Margin="0,12,0,0"/>
                 </StackPanel>
             </Border>
 
             <!-- ACTIVITY LOG -->
-            <Border Grid.Row="4" Style="{StaticResource Card}" MinHeight="200">
+            <Border Grid.Row="4" Style="{StaticResource Card}">
                 <DockPanel>
-                    <TextBlock DockPanel.Dock="Top"
-                               Text="Activity log"
-                               Style="{StaticResource SectionTitle}"
-                               Margin="0,0,0,12"/>
-                    <Border Background="#0F172A" CornerRadius="10" Padding="4">
+                    <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
+                        <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                            <Button Content="Copy"
+                                    Style="{StaticResource SmallButton}"
+                                    Margin="0,0,6,0"
+                                    ToolTip="Copy the whole log to the clipboard"
+                                    Click="CopyLog_Click"/>
+                            <Button Content="Clear"
+                                    Style="{StaticResource SmallButton}"
+                                    ToolTip="Clear the log on screen"
+                                    Click="ClearLog_Click"/>
+                        </StackPanel>
+                        <TextBlock Text="Activity log" Style="{StaticResource SectionTitle}"/>
+                    </DockPanel>
+                    <Border Background="#0F172A" CornerRadius="10" Padding="4" Height="240">
                         <ListBox x:Name="ActivityList"
                                  BorderThickness="0"
                                  Background="Transparent"
                                  Foreground="#CBD5E1"
                                  FontFamily="Cascadia Mono, Consolas"
                                  FontSize="12"
-                                 ScrollViewer.VerticalScrollBarVisibility="Auto"/>
+                                 AutomationProperties.Name="Activity log"
+                                 ItemContainerStyle="{StaticResource LogItem}"
+                                 ScrollViewer.HorizontalScrollBarVisibility="Disabled"
+                                 ScrollViewer.VerticalScrollBarVisibility="Auto">
+                            <ListBox.ItemTemplate>
+                                <DataTemplate>
+                                    <TextBlock Text="{Binding}" TextWrapping="Wrap"/>
+                                </DataTemplate>
+                            </ListBox.ItemTemplate>
+                        </ListBox>
                     </Border>
                 </DockPanel>
             </Border>
 
             <!-- FOOTER -->
-            <TextBlock Grid.Row="5"
+            <TextBlock x:Name="FooterText"
+                       Grid.Row="5"
                        Text="NotiRelay · personal Teams and Outlook notification relay"
                        Style="{StaticResource Caption}"
                        HorizontalAlignment="Center"

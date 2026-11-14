@@ -18,16 +18,17 @@ You subscribe to the same topic in the ntfy app on your phone and receive the te
 ## Features
 
 - Forward Outlook toasts (Windows notification listener) and Teams messages (OneDrive inbox) to ntfy.
-- **ntfy topic encrypted at rest** with Windows DPAPI for the current user.
+- **ntfy topic encrypted at rest** with Windows DPAPI for the current user; validated before saving, written atomically, with a warning for short, guessable topics.
 - **Durable delivery queue** with automatic retry and backoff — queued items are persisted (DPAPI-encrypted) and survive a restart.
-- **Baseline on start**: only notifications that appear after you press start are forwarded; existing ones are ignored.
+- **Missed while closed?** At launch, if Teams messages or Outlook notifications arrived while the app was closed, it asks *"Do you want me to send the messages that you missed while the app was closed?"*. **Yes** sends them oldest first, marked `Missed ·` with their original time; **No** skips them for good. New messages are relayed right away either way.
+- **Baseline on first start**: on the very first run, existing inbox files and toasts are ignored.
 - **System tray**, minimize-to-tray, and optional **Start with Windows** (per-user `HKCU\…\Run`, launches straight into the tray).
 - Message bodies are not written to the local activity log.
 - Single-file self-contained build, or a sparse-MSIX package for the notification-listener capability — both per-user, no admin.
 
 ## Screenshots
 
-Idle and active (the header pill turns green and pulses while relaying):
+Idle and active (the header pill turns green, pulses and names the active sources while relaying):
 
 ![NotiRelay — stopped](docs/screenshots/main.png)
 ![NotiRelay — relaying](docs/screenshots/main-active.png)
@@ -67,6 +68,10 @@ flowchart LR
 - **Secrets at rest.** The ntfy topic and queued payloads are protected with DPAPI for the current Windows user, never stored in clear text.
 - **Portability.** Ships either as one self-contained `.exe` (double-click) or as a per-user sparse package, so it runs on another PC without installing a runtime or needing admin rights.
 
+## Download
+
+Get `NotiRelay-<version>.exe` from the [Releases](https://github.com/iulian880/NotiRelay/releases) page. It is a self-contained single file: copy it to any Windows 10/11 x64 PC and run it, with no .NET install and no administrator rights. Every push to `main` rebuilds it on Windows (GitHub Actions) and updates the release; every pull request gets a test build under the workflow run's **Artifacts**.
+
 ## Build and run
 
 Requires the .NET 10 SDK on a Windows 10/11 x64 machine.
@@ -88,8 +93,8 @@ Sparse-identity package for the notification listener (per-user, no admin): run 
 ### ntfy setup
 
 1. Pick a long, unguessable topic (anyone who knows it can read what is posted to it) and subscribe to it in the ntfy app, or at `https://ntfy.sh/<topic>`.
-2. Enter the topic in the app and press **Save settings** (stored DPAPI-encrypted in `%LOCALAPPDATA%\NotiRelay`).
-3. Press **Test ntfy**, then tick the confirmation and press **Start monitoring**.
+2. Paste the topic (or its `https://ntfy.sh/<topic>` link) into the app and press **Save topic** or Enter. It is validated first, so a bad value never replaces the saved one, then stored DPAPI-encrypted in `%LOCALAPPDATA%\NotiRelay`. The window confirms it with the last four characters (`✓ Saved: ••••9q2x`).
+3. Press **Send test**. For Outlook, tick the confirmation once (it is remembered) and press **Start Outlook monitoring**.
 
 ## Notes
 

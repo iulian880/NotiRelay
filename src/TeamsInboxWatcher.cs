@@ -35,6 +35,19 @@ public sealed class TeamsInboxWatcher
     private Task? _workerTask;
     private string _inboxPath = string.Empty;
 
+    // Messages missed while the app was closed, held until the user answers.
+    // Set by Start before the worker runs and changed afterwards only by the worker
+    // (or by StopAsync once the worker has finished); the UI thread only posts the
+    // decision, so the worker never shares these collections with another thread.
+    private const int NoDecision = 0;
+    private const int SendDecision = 1;
+    private const int SkipDecision = 2;
+
+    private IReadOnlyList<MissedTeamsMessage> _held = Array.Empty<MissedTeamsMessage>();
+    private HashSet<string> _heldFileNames = new(StringComparer.OrdinalIgnoreCase);
+    private int _heldDecision = NoDecision;
+    private bool _heldTopicWarningShown;
+
     public string? RecoveryWarning { get; private set; }
 
     public TeamsInboxWatcher(
@@ -52,7 +65,72 @@ public sealed class TeamsInboxWatcher
         _baselineFileNames = LoadBaselineFileNames();
     }
 
-    public void Start(string inboxPath)
+    /// <summary>
+    /// Inbox messages that were never forwarded (they arrived while NotiRelay was closed).
+    /// Call only while monitoring is stopped. Files that cannot be read or parsed yet are
+    /// left out and follow the normal path once monitoring runs.
+    /// </summary>
+    public IReadOnlyList<MissedTeamsMessage> FindUnsent(string inboxPath)
+    {
+        if (_workerTask is not null)
+        {
+            throw new InvalidOperationException(
+                "Stop Teams monitoring before looking for unsent messages.");
+        }
+
+        // First run: Start will baseline every existing file, so nothing counts as missed.
+        if (!File.Exists(BaselinePath) || !Directory.Exists(inboxPath))
+            return Array.Empty<MissedTeamsMessage>();
+
+        var files = new List<(string FileName, TeamsInboxMessage Message, DateTimeOffset FileTimeUtc)>();
+
+        foreach (string path in Directory.GetFiles(
+                     inboxPath,
+                     "*.json",
+                     SearchOption.TopDirectoryOnly))
+        {
+            string name = Path.GetFileName(path);
+
+            if (_baselineFileNames.Contains(name))
+                continue;
+
+            try
+            {
+                if (TeamsMessageParser.TryParse(
+                        File.ReadAllText(path),
+                        out TeamsInboxMessage? message,
+                        out _) &&
+                    message is not null)
+                {
+                    files.Add((
+                        name,
+                        message,
+                        new DateTimeOffset(File.GetLastWriteTimeUtc(path))));
+                }
+            }
+            catch (Exception ex) when (
+                ex is IOException || ex is UnauthorizedAccessException)
+            {
+                // Still syncing or locked: handled later by the normal scan.
+            }
+        }
+
+        return MissedMessages.SelectUnsent(
+            files,
+            _baselineFileNames,
+            _processedMessageKeys);
+    }
+
+    /// <summary>
+    /// Records the user's answer for the held messages. The worker applies it on its
+    /// own thread at the start of its next loop.
+    /// </summary>
+    public void ResolveHeld(bool send)
+    {
+        Volatile.Write(ref _heldDecision, send ? SendDecision : SkipDecision);
+    }
+
+    public void Start(string inboxPath, IReadOnlyList<MissedTeamsMessage>? held = null)
     {
         if (_workerTask is not null)
             return;
@@ -122,6 +200,20 @@ public sealed class TeamsInboxWatcher
                 $"Tracked existing files: {_baselineFileNames.Count}.");
         }
 
+        _held = held ?? Array.Empty<MissedTeamsMessage>();
+        _heldFileNames = new HashSet<string>(
+            _held.SelectMany(missed => missed.FileNames),
+            StringComparer.OrdinalIgnoreCase);
+        _heldDecision = NoDecision;
+        _heldTopicWarningShown = false;
+
+        if (_held.Count > 0)
+        {
+            Report(
+                $"Teams messages missed while closed: {_held.Count}. " +
+                "Held until you answer.");
+        }
+
         _cancellation = new CancellationTokenSource();
 
         Report("Teams inbox monitoring started: " + _inboxPath);
@@ -143,6 +235,10 @@ public sealed class TeamsInboxWatcher
         _cancellation = null;
         _workerTask = null;
 
+        // An unanswered question lapses: those messages are still unsent and will be
+        // offered again on the next launch.
+        ClearHeld();
+
         Report("Teams inbox monitoring stopped.");
     }
 
@@ -152,6 +248,8 @@ public sealed class TeamsInboxWatcher
         {
             try
             {
+                await ApplyHeldDecisionAsync(cancellationToken);
+
                 await ScanInboxAsync(cancellationToken);
 
                 await Task.Delay(
@@ -183,6 +281,91 @@ public sealed class TeamsInboxWatcher
         }
 
         Report("Teams inbox worker stopped.");
+    }
+
+    private async Task ApplyHeldDecisionAsync(CancellationToken cancellationToken)
+    {
+        int decision = Volatile.Read(ref _heldDecision);
+
+        if (decision == NoDecision || _held.Count == 0)
+            return;
+
+        if (decision == SkipDecision)
+        {
+            // Record the keys, not just the file names: a later OneDrive touch on a
+            // skipped file must not send it after all.
+            foreach (MissedTeamsMessage missed in _held)
+                _processedMessageKeys.Add(missed.Key);
+
+            SaveProcessedKeys();
+
+            Report($"Missed Teams messages skipped: {_held.Count}.");
+            ClearHeld();
+            return;
+        }
+
+        string topic = _topicProvider();
+
+        if (string.IsNullOrWhiteSpace(topic))
+        {
+            if (!_heldTopicWarningShown)
+            {
+                _heldTopicWarningShown = true;
+                Report("Missed Teams messages are waiting: ntfy topic is not configured.");
+            }
+
+            return;
+        }
+
+        DateTime nowLocal = DateTime.Now;
+        int queued = 0;
+
+        // Oldest first; keys are recorded one by one so a failure part-way never
+        // sends the same message twice when the worker retries.
+        foreach (MissedTeamsMessage missed in _held)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            if (_processedMessageKeys.Contains(missed.Key))
+                continue;
+
+            TeamsInboxMessage message = missed.Message;
+
+            string sender = string.IsNullOrWhiteSpace(message.SenderName)
+                ? "Unknown sender"
+                : message.SenderName.Trim();
+
+            await _queue.EnqueueAsync(
+                "teams:" + missed.Key,
+                MissedMessages.Body(message.Text, missed.SortTimeUtc.LocalDateTime, nowLocal),
+                MissedMessages.Title(sender),
+                "high",
+                topic);
+
+            _processedMessageKeys.Add(missed.Key);
+
+            try
+            {
+                SaveProcessedKeys();
+            }
+            catch
+            {
+                _processedMessageKeys.Remove(missed.Key);
+                throw;
+            }
+
+            queued++;
+        }
+
+        Report($"Missed Teams messages queued: {queued}.");
+        ClearHeld();
+    }
+
+    private void ClearHeld()
+    {
+        _held = Array.Empty<MissedTeamsMessage>();
+        _heldFileNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        Volatile.Write(ref _heldDecision, NoDecision);
     }
 
     private async Task ScanInboxAsync(
@@ -223,6 +406,10 @@ public sealed class TeamsInboxWatcher
                 var info = new FileInfo(path);
 
                 if (!info.Exists)
+                    continue;
+
+                // Missed while closed: waits for the user's answer.
+                if (_heldFileNames.Contains(info.Name))
                     continue;
 
                 if (!_fileStates.TryGetValue(path, out FileState? state))
@@ -299,16 +486,23 @@ public sealed class TeamsInboxWatcher
             if (!TeamsMessageParser.TryParse(
                     json,
                     out TeamsInboxMessage? message,
-                    out string error) ||
+                    out string error,
+                    out TeamsInboxMessage? nothingToForward) ||
                 message is null)
             {
+                if (nothingToForward is not null)
+                {
+                    // Complete but empty (system event, deleted message...): record it
+                    // once so it is not retried and logged again on every launch.
+                    SkipPermanently(nothingToForward, error, state);
+                    return;
+                }
+
                 RetryLater(state, error, path);
                 return;
             }
 
-            // Message IDs are scoped to a conversation.
-            string messageKey =
-                message.ConversationId + ":" + message.MessageId;
+            string messageKey = MissedMessages.MessageKey(message);
 
             if (_processedMessageKeys.Contains(messageKey))
             {
@@ -385,6 +579,33 @@ public sealed class TeamsInboxWatcher
                 ex.GetType().Name + ": " + ex.Message,
                 path);
         }
+    }
+
+    private void SkipPermanently(
+        TeamsInboxMessage message,
+        string reason,
+        FileState state)
+    {
+        string messageKey = MissedMessages.MessageKey(message);
+
+        state.Processed = true;
+        state.RetryAfterUtc = DateTime.MinValue;
+        state.FailedAttempts = 0;
+
+        if (!_processedMessageKeys.Add(messageKey))
+            return;
+
+        try
+        {
+            SaveProcessedKeys();
+        }
+        catch
+        {
+            _processedMessageKeys.Remove(messageKey);
+            throw;
+        }
+
+        Report("Teams message skipped, nothing to forward: " + reason);
     }
 
     private void RetryLater(

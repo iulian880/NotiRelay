@@ -1,7 +1,10 @@
 
 using System.IO;
 using System.Net.Http;
+using System.Reflection;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
 using System.Windows.Threading;
 using Windows.UI.Notifications;
 using Windows.UI.Notifications.Management;
@@ -35,10 +38,29 @@ public partial class MainWindow : Window
     private bool _isShuttingDown;
     private bool _allowExit;
     private bool _suppressStartupToggle;
+    private bool _suppressConsentToggle;
+    private bool _isTestingNtfy;
+    private bool _topicRevealed;
+    private bool _trayHintShown;
+    private bool _heartbeatErrorLogged;
+
+    // When NotiRelay last ran, read before this run overwrites it: toasts newer than
+    // this were missed while the app was closed.
+    private readonly DateTimeOffset? _previousActiveUtc;
+    private readonly DispatcherTimer _heartbeatTimer;
+
+    private readonly List<MissedOutlookToast> _missedOutlook = new();
+    private IReadOnlyList<MissedTeamsMessage> _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+
+    private sealed record MissedOutlookToast(string Text, DateTimeOffset CreatedAt, string QueueId);
+
+    private enum StatusKind { Neutral, Success, Warning, Error }
 
     public MainWindow()
     {
         InitializeComponent();
+
+        FitToWorkArea();
 
         ShowInTaskbar = false;
 
@@ -48,6 +70,16 @@ public partial class MainWindow : Window
         StateChanged += MainWindow_StateChanged;
 
         _settings = AppSettings.Load();
+
+        _previousActiveUtc = _settings.LastActiveUtc;
+
+        // Record that NotiRelay is running (every 30 s, on every forwarded toast, on exit
+        // and when Windows signs out), so the next launch knows what was missed.
+        _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _heartbeatTimer.Tick += (_, _) => SaveHeartbeat();
+        _heartbeatTimer.Start();
+
+        System.Windows.Application.Current.SessionEnding += (_, _) => SaveHeartbeat();
 
         TeamsInboxPathBox.Text = _settings.TeamsInboxPath;
 
@@ -63,7 +95,8 @@ public partial class MainWindow : Window
             () => _settings.GetTopic(),
             LogFromWorker);
 
-        RefreshTopicLabel();
+        RefreshTopicState();
+        ShowInitialNtfyStatus();
 
         _pollTimer = new DispatcherTimer
         {
@@ -72,7 +105,10 @@ public partial class MainWindow : Window
 
         _pollTimer.Tick += PollTimer_Tick;
 
-        AuthorizationCheckBox.IsChecked = true;
+        // The confirmation is the user's own, remembered choice; the app never ticks it.
+        _suppressConsentToggle = true;
+        AuthorizationCheckBox.IsChecked = _settings.OutlookForwardingConfirmed;
+        _suppressConsentToggle = false;
 
         _suppressStartupToggle = true;
         StartWithWindowsCheckBox.IsChecked = StartupManager.IsEnabled();
@@ -81,7 +117,13 @@ public partial class MainWindow : Window
         SetRunningState(false);
         SetTeamsInboxRunningState(false);
 
+        FooterText.Text =
+            $"NotiRelay {GetAppVersion()} · personal Teams and Outlook notification relay";
+
         AddLog("NotiRelay application opened.");
+
+        if (!string.IsNullOrWhiteSpace(_settings.LoadWarning))
+            AddLog("SETTINGS WARNING: " + _settings.LoadWarning);
 
         if (!string.IsNullOrWhiteSpace(_deliveryQueue.RecoveryWarning))
         {
@@ -107,9 +149,137 @@ public partial class MainWindow : Window
             if (Array.IndexOf(Environment.GetCommandLineArgs(), StartupManager.AutostartArgument) >= 0)
                 WindowState = WindowState.Minimized;
 
+            // New messages are relayed from now on; only those missed while the app was
+            // closed wait for the user's answer.
             await AutoStartAsync();
             await AutoStartTeamsInboxAsync();
+            await AskAboutMissedMessagesAsync();
         };
+    }
+
+    // ==========================================
+    // MESSAGES MISSED WHILE THE APP WAS CLOSED
+    // ==========================================
+
+    private void TryCaptureMissedOutlook(UserNotification item)
+    {
+        try
+        {
+            if (!MissedMessages.IsMissedOutlook(item.CreationTime, _previousActiveUtc))
+                return;
+
+            if (!IsSupportedApp(item.AppInfo?.DisplayInfo?.DisplayName ?? string.Empty))
+                return;
+
+            string text = ExtractNotificationText(item);
+
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            _missedOutlook.Add(new MissedOutlookToast(
+                text,
+                item.CreationTime,
+                $"{item.Id}:{item.CreationTime.UtcDateTime.Ticks}"));
+        }
+        catch (Exception ex)
+        {
+            AddLog("A notification could not be checked for missed messages: " + ex.Message);
+        }
+    }
+
+    private async Task AskAboutMissedMessagesAsync()
+    {
+        int teamsCount = _launchMissedTeams.Count;
+        int outlookCount = _missedOutlook.Count;
+
+        if (teamsCount + outlookCount == 0 || _isShuttingDown)
+            return;
+
+        DateTimeOffset? oldest = _launchMissedTeams
+            .Select(missed => (DateTimeOffset?)missed.SortTimeUtc)
+            .Concat(_missedOutlook.Select(toast => (DateTimeOffset?)toast.CreatedAt))
+            .Min();
+
+        string details = MissedMessages.Describe(
+            teamsCount,
+            outlookCount,
+            oldest?.LocalDateTime,
+            DateTime.Now);
+
+        AddLog("Missed while closed: " + details + ". Waiting for your answer.");
+
+        bool send = MissedMessagesDialog.Ask(details);
+
+        if (_isShuttingDown)
+            return;
+
+        if (teamsCount > 0)
+            _teamsInboxWatcher.ResolveHeld(send);
+
+        _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+
+        await ResolveMissedOutlookAsync(send);
+
+        AddLog(send
+            ? "You chose to send the missed messages; they are sent oldest first."
+            : "You chose to skip the missed messages; relaying continues from now.");
+    }
+
+    private async Task ResolveMissedOutlookAsync(bool send)
+    {
+        if (_missedOutlook.Count == 0)
+            return;
+
+        var toasts = _missedOutlook.OrderBy(toast => toast.CreatedAt).ToList();
+        _missedOutlook.Clear();
+
+        if (!send)
+        {
+            AddLog($"Missed Outlook notifications skipped: {toasts.Count}.");
+            return;
+        }
+
+        try
+        {
+            string topic = RequireTopic();
+            DateTime nowLocal = DateTime.Now;
+
+            foreach (MissedOutlookToast toast in toasts)
+            {
+                await _deliveryQueue.EnqueueAsync(
+                    toast.QueueId,
+                    MissedMessages.Body(
+                        BuildNtfyPayload(toast.Text, toast.CreatedAt),
+                        toast.CreatedAt.LocalDateTime,
+                        nowLocal),
+                    MissedMessages.Title("OUTLOOK"),
+                    "urgent",
+                    topic);
+            }
+
+            AddLog($"Missed Outlook notifications queued: {toasts.Count}.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not queue the missed Outlook notifications: " + ex.Message);
+        }
+    }
+
+    private void SaveHeartbeat()
+    {
+        try
+        {
+            _settings.LastActiveUtc = DateTimeOffset.UtcNow;
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            if (_heartbeatErrorLogged)
+                return;
+
+            _heartbeatErrorLogged = true;
+            AddLog("Could not record when NotiRelay last ran: " + ex.Message);
+        }
     }
 
     // ==========================================
@@ -206,6 +376,9 @@ public partial class MainWindow : Window
 
         _isShuttingDown = true;
 
+        _heartbeatTimer.Stop();
+        SaveHeartbeat();
+
         AddLog("NotiRelay graceful shutdown started.");
 
         // Stop accepting new Windows toast notifications.
@@ -261,6 +434,7 @@ public partial class MainWindow : Window
         {
             e.Cancel = true;
             Hide();
+            ShowTrayHintOnce();
             return;
         }
 
@@ -273,43 +447,161 @@ public partial class MainWindow : Window
 
     private void SaveSettings_Click(object sender, RoutedEventArgs e)
     {
+        SaveTopicFromInput();
+    }
+
+    private void TopicInput_PreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
+    {
+        if (e.Key != Key.Enter)
+            return;
+
+        e.Handled = true;
+        SaveTopicFromInput();
+    }
+
+    private void TopicInput_Changed(object sender, RoutedEventArgs e)
+    {
+        TopicPlaceholder.Visibility = GetEnteredTopic().Length == 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private void RevealTopic_Click(object sender, RoutedEventArgs e)
+    {
+        _topicRevealed = !_topicRevealed;
+
+        if (_topicRevealed)
+        {
+            TopicPlainBox.Text = TopicBox.Password;
+            TopicBox.Clear();
+            TopicBox.Visibility = Visibility.Collapsed;
+            TopicPlainBox.Visibility = Visibility.Visible;
+            TopicPlainBox.CaretIndex = TopicPlainBox.Text.Length;
+            TopicPlainBox.Focus();
+        }
+        else
+        {
+            TopicBox.Password = TopicPlainBox.Text;
+            TopicPlainBox.Clear();
+            TopicPlainBox.Visibility = Visibility.Collapsed;
+            TopicBox.Visibility = Visibility.Visible;
+            TopicBox.Focus();
+        }
+
+        RevealTopicButton.Content = _topicRevealed ? "Hide" : "Show";
+        TopicInput_Changed(sender, e);
+    }
+
+    private string GetEnteredTopic() =>
+        _topicRevealed ? TopicPlainBox.Text : TopicBox.Password;
+
+    private void ClearEnteredTopic()
+    {
+        TopicBox.Clear();
+        TopicPlainBox.Clear();
+        TopicPlaceholder.Visibility = Visibility.Visible;
+    }
+
+    private void FocusTopicInput()
+    {
+        if (_topicRevealed)
+            TopicPlainBox.Focus();
+        else
+            TopicBox.Focus();
+    }
+
+    private void SaveTopicFromInput()
+    {
+        string entered = GetEnteredTopic();
+
+        if (string.IsNullOrWhiteSpace(entered))
+        {
+            if (_settings.TryGetTopic(out _))
+            {
+                SetStatus(NtfyStatus,
+                    "A topic is already saved. To change it, type the new one and press Save topic.",
+                    StatusKind.Neutral);
+            }
+            else
+            {
+                SetStatus(NtfyStatus, "Enter your ntfy topic first.", StatusKind.Error);
+            }
+
+            FocusTopicInput();
+            return;
+        }
+
         try
         {
-            SaveSettingsIfNeeded();
+            bool fromLink = entered.Contains('/');
+            string topic = SaveEnteredTopicIfAny()!;
 
-            NtfyStatus.Text = "ntfy settings saved successfully.";
-            AddLog("ntfy settings saved.");
+            if (NtfyTopic.IsWeak(topic))
+            {
+                SetStatus(NtfyStatus,
+                    $"Topic saved, but it is only {topic.Length} characters and easy to guess. " +
+                    $"Anyone who knows it can read your notifications; use at least {NtfyTopic.WeakBelowLength}.",
+                    StatusKind.Warning);
+            }
+            else
+            {
+                SetStatus(NtfyStatus,
+                    (fromLink ? "Topic taken from the ntfy.sh link, encrypted and saved. " : "Topic encrypted and saved. ") +
+                    "Press Send test to check that your phone receives it.",
+                    StatusKind.Success);
+            }
+
+            AddLog("ntfy topic saved.");
         }
         catch (Exception ex)
         {
-            NtfyStatus.Text =
-                "Could not save settings: " + ex.Message;
+            // Validation and write errors leave the previously saved topic untouched.
+            SetStatus(NtfyStatus,
+                ex is InvalidOperationException
+                    ? ex.Message
+                    : "Could not save the topic: " + ex.Message,
+                StatusKind.Error);
 
-            AddLog("Settings error: " + ex.Message);
+            AddLog("ntfy topic not saved: " + ex.Message);
+            FocusTopicInput();
         }
     }
 
     private async void TestNtfy_Click(object sender, RoutedEventArgs e)
     {
+        if (_isTestingNtfy)
+            return;
+
+        _isTestingNtfy = true;
+        TestNtfyButton.IsEnabled = false;
+        TestNtfyButton.Content = "Sending…";
+        SetStatus(NtfyStatus, "Sending a test notification…", StatusKind.Neutral);
+
         try
         {
-            SaveSettingsIfNeeded();
+            SaveEnteredTopicIfAny();
 
             var client = GetNtfyClient();
 
             await client.SendSyntheticTestAsync();
 
-            NtfyStatus.Text =
-                "Test notification delivered successfully.";
+            SetStatus(NtfyStatus,
+                "Test sent. It should appear on your phone within a few seconds.",
+                StatusKind.Success);
 
             AddLog("Synthetic ntfy test notification sent.");
         }
         catch (Exception ex)
         {
-            NtfyStatus.Text =
-                "ntfy test failed: " + ex.Message;
+            SetStatus(NtfyStatus, "Test failed: " + NtfyErrors.Describe(ex) + ".", StatusKind.Error);
 
             AddLog("ntfy test failed: " + ex.Message);
+        }
+        finally
+        {
+            _isTestingNtfy = false;
+            TestNtfyButton.IsEnabled = !_isShuttingDown;
+            TestNtfyButton.Content = "Send test";
         }
     }
 
@@ -346,26 +638,39 @@ public partial class MainWindow : Window
 
             if (!Directory.Exists(selectedPath))
             {
-                TeamsInboxStatus.Text =
-                    "The selected folder does not exist.";
+                SetStatus(TeamsInboxStatus,
+                    "The selected folder does not exist.", StatusKind.Error);
 
                 return;
             }
 
+            string previousPath = _settings.TeamsInboxPath;
             _settings.TeamsInboxPath = selectedPath;
-            _settings.Save();
+
+            try
+            {
+                _settings.Save();
+            }
+            catch
+            {
+                _settings.TeamsInboxPath = previousPath;
+                throw;
+            }
 
             TeamsInboxPathBox.Text = selectedPath;
 
-            TeamsInboxStatus.Text =
-                "Teams inbox folder saved successfully.";
+            SetStatus(TeamsInboxStatus,
+                _isTeamsInboxRunning
+                    ? "Folder saved. Stop and start Teams monitoring to switch to it."
+                    : "Teams inbox folder saved.",
+                _isTeamsInboxRunning ? StatusKind.Warning : StatusKind.Success);
 
             AddLog("Teams inbox folder configured: " + selectedPath);
         }
         catch (Exception ex)
         {
-            TeamsInboxStatus.Text =
-                "Could not configure Teams inbox: " + ex.Message;
+            SetStatus(TeamsInboxStatus,
+                "Could not configure Teams inbox: " + ex.Message, StatusKind.Error);
 
             AddLog(
                 "Teams inbox configuration error: " +
@@ -386,8 +691,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            TeamsInboxStatus.Text =
-                "Could not start Teams monitoring: " + ex.Message;
+            SetStatus(TeamsInboxStatus,
+                "Could not start Teams monitoring: " + ex.Message, StatusKind.Error);
 
             AddLog(
                 "Teams monitoring start failed: " +
@@ -407,15 +712,15 @@ public partial class MainWindow : Window
 
             SetTeamsInboxRunningState(false);
 
-            TeamsInboxStatus.Text =
-                "Teams inbox monitoring stopped.";
+            SetStatus(TeamsInboxStatus,
+                "Teams inbox monitoring stopped.", StatusKind.Neutral);
 
             AddLog("Teams inbox monitoring stopped by user.");
         }
         catch (Exception ex)
         {
-            TeamsInboxStatus.Text =
-                "Could not stop Teams monitoring: " + ex.Message;
+            SetStatus(TeamsInboxStatus,
+                "Could not stop Teams monitoring: " + ex.Message, StatusKind.Error);
 
             AddLog(
                 "Teams monitoring stop failed: " +
@@ -423,7 +728,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StartTeamsInboxMonitoring(bool automatic)
+    private void StartTeamsInboxMonitoring(
+        bool automatic,
+        IReadOnlyList<MissedTeamsMessage>? held = null)
     {
         if (_isTeamsInboxRunning)
             return;
@@ -431,11 +738,9 @@ public partial class MainWindow : Window
         if (_isShuttingDown)
             return;
 
-        SaveSettingsIfNeeded();
+        SaveEnteredTopicIfAny();
 
-        string topic = _settings.GetTopic();
-
-        ValidateTopic(topic);
+        RequireTopic();
 
         string inboxPath = _settings.TeamsInboxPath;
 
@@ -452,14 +757,15 @@ public partial class MainWindow : Window
                 inboxPath);
         }
 
-        _teamsInboxWatcher.Start(inboxPath);
+        _teamsInboxWatcher.Start(inboxPath, held);
 
         _isTeamsInboxRunning = true;
 
         SetTeamsInboxRunningState(true);
 
-        TeamsInboxStatus.Text =
-            "Teams inbox monitoring active. New messages are being processed.";
+        SetStatus(TeamsInboxStatus,
+            "Teams inbox monitoring active. New messages are being forwarded.",
+            StatusKind.Success);
 
         AddLog(automatic
             ? "Teams inbox monitoring started automatically."
@@ -473,51 +779,64 @@ public partial class MainWindow : Window
         }
     }
 
-    private Task AutoStartTeamsInboxAsync()
+    private async Task AutoStartTeamsInboxAsync()
     {
         if (string.IsNullOrWhiteSpace(_settings.TeamsInboxPath))
         {
             AddLog(
                 "Teams auto-start skipped: inbox folder is not configured.");
 
-            return Task.CompletedTask;
+            return;
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.ProtectedTopic))
+        if (!_settings.TryGetTopic(out _))
         {
             AddLog(
                 "Teams auto-start skipped: ntfy topic is not configured.");
 
-            return Task.CompletedTask;
+            return;
         }
 
         if (!Directory.Exists(_settings.TeamsInboxPath))
         {
-            TeamsInboxStatus.Text =
+            SetStatus(TeamsInboxStatus,
                 "Configured Teams inbox folder is unavailable. " +
-                "Check OneDrive synchronization.";
+                "Check OneDrive synchronization.",
+                StatusKind.Warning);
 
             AddLog(
                 "Teams auto-start skipped: configured inbox folder is unavailable.");
 
-            return Task.CompletedTask;
+            return;
+        }
+
+        // Messages that arrived while the app was closed are held until the user answers.
+        IReadOnlyList<MissedTeamsMessage> missed = Array.Empty<MissedTeamsMessage>();
+        string inboxPath = _settings.TeamsInboxPath;
+
+        try
+        {
+            missed = await Task.Run(() => _teamsInboxWatcher.FindUnsent(inboxPath));
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not look for missed Teams messages: " + ex.Message);
         }
 
         try
         {
-            StartTeamsInboxMonitoring(automatic: true);
+            StartTeamsInboxMonitoring(automatic: true, held: missed);
+            _launchMissedTeams = missed;
         }
         catch (Exception ex)
         {
-            TeamsInboxStatus.Text =
-                "Teams auto-start failed: " + ex.Message;
+            SetStatus(TeamsInboxStatus,
+                "Teams auto-start failed: " + ex.Message, StatusKind.Error);
 
             AddLog(
                 "Teams auto-start failed: " +
                 ex.Message);
         }
-
-        return Task.CompletedTask;
     }
 
     private void SetTeamsInboxRunningState(bool running)
@@ -538,16 +857,47 @@ public partial class MainWindow : Window
 
         if (AuthorizationCheckBox.IsChecked != true)
         {
-            System.Windows.MessageBox.Show(
-                "Confirm the notification forwarding setting first.",
-                "Confirmation required",
-                MessageBoxButton.OK,
-                MessageBoxImage.Warning);
+            SetStatus(ListenerStatus,
+                "Tick the confirmation above first, then press Start Outlook monitoring.",
+                StatusKind.Warning);
 
+            AuthorizationCheckBox.Focus();
             return;
         }
 
         await StartForwardingAsync(automatic: false);
+    }
+
+    private void OutlookConsent_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressConsentToggle)
+            return;
+
+        bool confirmed = AuthorizationCheckBox.IsChecked == true;
+        bool previous = _settings.OutlookForwardingConfirmed;
+
+        _settings.OutlookForwardingConfirmed = confirmed;
+
+        try
+        {
+            _settings.Save();
+
+            AddLog(confirmed
+                ? "Outlook forwarding confirmed."
+                : "Outlook forwarding confirmation removed.");
+        }
+        catch (Exception ex)
+        {
+            _settings.OutlookForwardingConfirmed = previous;
+
+            AddLog("Could not save the Outlook confirmation: " + ex.Message);
+            SetStatus(ListenerStatus,
+                "Could not save the confirmation: " + ex.Message, StatusKind.Error);
+        }
+
+        // Withdrawing consent stops forwarding immediately.
+        if (!confirmed && _isRunning)
+            StopForwarding("Outlook monitoring stopped: confirmation removed.");
     }
 
     private void Stop_Click(object sender, RoutedEventArgs e)
@@ -561,26 +911,23 @@ public partial class MainWindow : Window
         if (AuthorizationCheckBox.IsChecked != true)
         {
             AddLog(
-                "Windows notification auto-start skipped: confirmation not checked.");
+                "Outlook auto-start skipped: confirmation not checked.");
 
             return;
         }
 
-        if (string.IsNullOrWhiteSpace(_settings.ProtectedTopic))
+        if (!_settings.TryGetTopic(out _))
         {
             AddLog(
-                "Windows notification auto-start skipped: ntfy topic not configured.");
-
-            NtfyStatus.Text =
-                "Enter your ntfy topic and save settings first.";
+                "Outlook auto-start skipped: ntfy topic not configured.");
 
             return;
         }
 
-        await StartForwardingAsync(automatic: true);
+        await StartForwardingAsync(automatic: true, captureMissed: true);
     }
 
-    private async Task<bool> StartForwardingAsync(bool automatic)
+    private async Task<bool> StartForwardingAsync(bool automatic, bool captureMissed = false)
     {
         if (_isRunning)
             return true;
@@ -590,11 +937,7 @@ public partial class MainWindow : Window
 
         try
         {
-            SaveSettingsIfNeeded();
-
-            string topic = _settings.GetTopic();
-
-            ValidateTopic(topic);
+            SaveEnteredTopicIfAny();
 
             _ntfy = GetNtfyClient();
 
@@ -604,17 +947,18 @@ public partial class MainWindow : Window
 
             if (access != UserNotificationListenerAccessStatus.Allowed)
             {
-                ListenerStatus.Text =
-                    "Requesting Windows notification access...";
+                SetStatus(ListenerStatus,
+                    "Requesting Windows notification access…", StatusKind.Neutral);
 
                 access = await _listener.RequestAccessAsync();
             }
 
             if (access != UserNotificationListenerAccessStatus.Allowed)
             {
-                ListenerStatus.Text =
+                SetStatus(ListenerStatus,
                     "Windows notification permission was not granted. " +
-                    "Check Windows notification privacy settings and app permissions.";
+                    "Check Windows notification privacy settings and app permissions.",
+                    StatusKind.Error);
 
                 AddLog(
                     "Windows notification access not granted: " + access);
@@ -622,14 +966,22 @@ public partial class MainWindow : Window
                 return false;
             }
 
-            // Existing notifications are ignored.
+            // Existing notifications are not forwarded by the poll. At launch, the Outlook
+            // ones that appeared after NotiRelay last ran are kept aside for the
+            // "send what you missed?" question.
             var current = await _listener.GetNotificationsAsync(
                 NotificationKinds.Toast);
 
             _seenNotificationIds.Clear();
+            _missedOutlook.Clear();
 
             foreach (var item in current)
+            {
                 _seenNotificationIds.Add(item.Id);
+
+                if (captureMissed)
+                    TryCaptureMissedOutlook(item);
+            }
 
             _isRunning = true;
 
@@ -637,8 +989,11 @@ public partial class MainWindow : Window
 
             SetRunningState(true);
 
-            ListenerStatus.Text =
-                $"Monitoring active. Existing notifications ignored: {current.Count}.";
+            SetStatus(ListenerStatus,
+                _missedOutlook.Count > 0
+                    ? $"Outlook monitoring active. Missed while closed: {_missedOutlook.Count}."
+                    : $"Outlook monitoring active. Existing notifications ignored: {current.Count}.",
+                StatusKind.Success);
 
             AddLog(automatic
                 ? "Windows notification monitoring started automatically."
@@ -648,8 +1003,8 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            ListenerStatus.Text =
-                "Could not start: " + ex.Message;
+            SetStatus(ListenerStatus,
+                "Could not start: " + ex.Message, StatusKind.Error);
 
             AddLog(
                 "Windows notification start failed: " +
@@ -711,9 +1066,7 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                string topic = _settings.GetTopic();
-
-                ValidateTopic(topic);
+                string topic = RequireTopic();
 
                 string payload = BuildNtfyPayload(
                     messageText,
@@ -733,6 +1086,10 @@ public partial class MainWindow : Window
                     topic);
 
                 _seenNotificationIds.Add(notification.Id);
+
+                // Forwarded toasts must never be offered again as "missed", even if
+                // the app is killed before the next heartbeat.
+                SaveHeartbeat();
 
                 int pending =
                     await _deliveryQueue.GetPendingCountAsync();
@@ -834,24 +1191,53 @@ public partial class MainWindow : Window
     // SETTINGS STORAGE
     // ==========================================
 
-    private void SaveSettingsIfNeeded()
+    /// <summary>
+    /// Saves the topic typed in the box, if any. The value is normalised (an ntfy.sh link
+    /// becomes the bare topic) and validated before anything is written, so an invalid
+    /// entry throws <see cref="InvalidOperationException"/> and the saved topic stays as it was.
+    /// Returns the saved topic, or null when the box is empty.
+    /// </summary>
+    private string? SaveEnteredTopicIfAny()
     {
-        string enteredTopic = TopicBox.Password.Trim();
+        string entered = GetEnteredTopic();
 
-        if (!string.IsNullOrWhiteSpace(enteredTopic))
+        if (string.IsNullOrWhiteSpace(entered))
+            return null;
+
+        string topic = NtfyTopic.Normalize(entered);
+
+        ValidateTopic(topic);
+
+        _settings.SaveTopic(topic);
+
+        // Prevent using a client cached for the previous topic.
+        _ntfy = null;
+
+        ClearEnteredTopic();
+        RefreshTopicState();
+
+        return topic;
+    }
+
+    /// <summary>Returns the saved topic or throws a message the user can act on.</summary>
+    private string RequireTopic()
+    {
+        if (!_settings.HasStoredTopic)
         {
-            _settings.SetTopic(enteredTopic);
-
-            // Prevent using a client cached for the previous topic.
-            _ntfy = null;
+            throw new InvalidOperationException(
+                "Enter your ntfy topic and press Save topic first.");
         }
 
-        _settings.Save();
+        if (!_settings.TryGetTopic(out string topic))
+        {
+            throw new InvalidOperationException(
+                "The saved ntfy topic can't be decrypted for this Windows user. " +
+                "Enter it again and press Save topic.");
+        }
 
-        if (!string.IsNullOrWhiteSpace(enteredTopic))
-            TopicBox.Clear();
+        ValidateTopic(topic);
 
-        RefreshTopicLabel();
+        return topic;
     }
 
     private NtfyClient GetNtfyClient()
@@ -859,32 +1245,17 @@ public partial class MainWindow : Window
         if (_ntfy is not null)
             return _ntfy;
 
-        string topic = _settings.GetTopic();
-
-        ValidateTopic(topic);
-
-        _ntfy = new NtfyClient(topic, _httpClient);
+        _ntfy = new NtfyClient(RequireTopic(), _httpClient);
 
         return _ntfy;
     }
 
     private static void ValidateTopic(string topic)
     {
-        if (string.IsNullOrWhiteSpace(topic))
-        {
-            throw new InvalidOperationException(
-                "Enter your ntfy topic first.");
-        }
+        string? error = NtfyTopic.Validate(topic);
 
-        if (topic.Length > 64 ||
-            topic.Any(c =>
-                !char.IsAsciiLetterOrDigit(c) &&
-                c != '_' &&
-                c != '-'))
-        {
-            throw new InvalidOperationException(
-                "The topic must contain only letters, numbers, underscores or hyphens, with a maximum of 64 characters.");
-        }
+        if (error is not null)
+            throw new InvalidOperationException(error);
     }
 
     // ==========================================
@@ -899,7 +1270,7 @@ public partial class MainWindow : Window
 
         SetRunningState(false);
 
-        ListenerStatus.Text = reason;
+        SetStatus(ListenerStatus, reason, StatusKind.Neutral);
 
         AddLog(reason);
     }
@@ -917,9 +1288,27 @@ public partial class MainWindow : Window
     /// </summary>
     private void UpdateHeaderState()
     {
-        bool active = _isRunning || _isTeamsInboxRunning;
+        var sources = new List<string>();
 
-        StateBadge.Text = active ? "RELAYING" : "STOPPED";
+        if (_isTeamsInboxRunning)
+            sources.Add("Teams");
+
+        if (_isRunning)
+            sources.Add("Outlook");
+
+        bool active = sources.Count > 0;
+
+        StateBadge.Text = active
+            ? "RELAYING · " + string.Join(" + ", sources).ToUpperInvariant()
+            : "STOPPED";
+
+        StatePill.ToolTip = active
+            ? "Forwarding new notifications from " + string.Join(" and ", sources) + "."
+            : "Nothing is being forwarded. Start Teams or Outlook monitoring below.";
+
+        _trayIcon.Text = active
+            ? $"NotiRelay — relaying ({string.Join(", ", sources)})"
+            : "NotiRelay — stopped";
         StateBadge.Foreground = new System.Windows.Media.SolidColorBrush(
             active
                 ? System.Windows.Media.Color.FromRgb(0x15, 0x80, 0x3D)
@@ -989,12 +1378,120 @@ public partial class MainWindow : Window
         }
     }
 
-    private void RefreshTopicLabel()
+    /// <summary>Shows what is really stored: nothing, a readable topic (masked), or an unreadable one.</summary>
+    private void RefreshTopicState()
     {
-        TopicSavedLabel.Text =
-            string.IsNullOrWhiteSpace(_settings.ProtectedTopic)
-                ? "No saved topic"
-                : "An ntfy topic is saved securely for this Windows user.";
+        if (!_settings.HasStoredTopic)
+        {
+            TopicSavedLabel.Text = "No topic saved yet.";
+            TopicSavedLabel.Foreground = Brush("SubtleBrush");
+        }
+        else if (_settings.TryGetTopic(out string topic))
+        {
+            TopicSavedLabel.Text =
+                $"✓ Saved: {NtfyTopic.Mask(topic)} · encrypted for this Windows user";
+            TopicSavedLabel.Foreground = Brush("SuccessBrush");
+        }
+        else
+        {
+            TopicSavedLabel.Text =
+                "⚠ The saved topic can't be decrypted on this Windows account. Enter it again.";
+            TopicSavedLabel.Foreground = Brush("DangerBrush");
+        }
+    }
+
+    private void ShowInitialNtfyStatus()
+    {
+        if (!string.IsNullOrWhiteSpace(_settings.LoadWarning))
+            SetStatus(NtfyStatus, _settings.LoadWarning, StatusKind.Error);
+        else if (!_settings.HasStoredTopic)
+            SetStatus(NtfyStatus, "Not configured yet. Enter your topic and press Save topic.", StatusKind.Neutral);
+        else if (!_settings.TryGetTopic(out _))
+            SetStatus(NtfyStatus, "Enter the topic again and press Save topic.", StatusKind.Error);
+        else
+            SetStatus(NtfyStatus, "ntfy is configured.", StatusKind.Neutral);
+    }
+
+    private void SetStatus(TextBlock target, string text, StatusKind kind)
+    {
+        target.Text = text;
+        target.Foreground = Brush(kind switch
+        {
+            StatusKind.Success => "SuccessBrush",
+            StatusKind.Warning => "WarningBrush",
+            StatusKind.Error => "DangerBrush",
+            _ => "MutedBrush"
+        });
+    }
+
+    private System.Windows.Media.Brush Brush(string key) =>
+        (System.Windows.Media.Brush)FindResource(key);
+
+    private void TeamsInboxPath_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (TeamsInboxPlaceholder is null)
+            return;
+
+        TeamsInboxPlaceholder.Visibility = string.IsNullOrEmpty(TeamsInboxPathBox.Text)
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    /// <summary>Keeps the window (and its title bar) on screen on small or scaled displays.</summary>
+    private void FitToWorkArea()
+    {
+        Rect workArea = SystemParameters.WorkArea;
+
+        if (Height > workArea.Height)
+            Height = Math.Max(MinHeight, workArea.Height);
+
+        if (Width > workArea.Width)
+            Width = Math.Max(MinWidth, workArea.Width);
+    }
+
+    private void ShowTrayHintOnce()
+    {
+        if (_trayHintShown || _isShuttingDown)
+            return;
+
+        _trayHintShown = true;
+
+        _trayIcon.ShowBalloonTip(
+            4000,
+            "NotiRelay is still running",
+            "It keeps forwarding from the tray. Double-click the tray icon to reopen it, or right-click → Exit to quit.",
+            System.Windows.Forms.ToolTipIcon.Info);
+    }
+
+    private static string GetAppVersion() =>
+        Assembly.GetExecutingAssembly()
+            .GetCustomAttribute<AssemblyInformationalVersionAttribute>()?
+            .InformationalVersion
+        ?? "1.0";
+
+    private void CopyLog_Click(object sender, RoutedEventArgs e)
+    {
+        // The list shows newest first; copy oldest first so it reads like a log file.
+        string text = string.Join(
+            Environment.NewLine,
+            ActivityList.Items.Cast<object>().Select(item => item.ToString()).Reverse());
+
+        try
+        {
+            System.Windows.Clipboard.SetText(text);
+            AddLog("Activity log copied to the clipboard.");
+        }
+        catch (Exception ex)
+        {
+            // The clipboard can be briefly locked by another application.
+            AddLog("Could not copy the log: " + ex.Message);
+        }
+    }
+
+    private void ClearLog_Click(object sender, RoutedEventArgs e)
+    {
+        ActivityList.Items.Clear();
+        AddLog("Activity log cleared.");
     }
 
     private void AddLog(string message)
