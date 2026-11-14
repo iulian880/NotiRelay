@@ -19,6 +19,8 @@
     <Compile Include="../../src/NetworkProbe.cs" Link="Linked/NetworkProbe.cs" />
     <Compile Include="../../src/SendingGate.cs" Link="Linked/SendingGate.cs" />
     <Compile Include="../../src/DeliveryThrottle.cs" Link="Linked/DeliveryThrottle.cs" />
+    <Compile Include="../../src/CalendarNotifications.cs" Link="Linked/CalendarNotifications.cs" />
+    <Compile Include="../../src/CalendarState.cs" Link="Linked/CalendarState.cs" />
   </ItemGroup>
 
   <ItemGroup>

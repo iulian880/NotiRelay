@@ -21,6 +21,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- HEADER -->
@@ -247,8 +248,39 @@
                 </StackPanel>
             </Border>
 
-            <!-- ACTIVITY LOG -->
+            <!-- OUTLOOK CALENDAR -->
             <Border Grid.Row="4" Style="{StaticResource Card}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Border Style="{StaticResource StepBadge}">
+                            <TextBlock Text="4" Style="{StaticResource StepNumber}"/>
+                        </Border>
+                        <TextBlock Text="Outlook calendar" Style="{StaticResource SectionTitle}"/>
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource SectionDesc}"
+                               Text="Optional. Sends your meetings to the phone: new, moved or cancelled meetings within about 15 seconds, today's agenda at 08:00, and a reminder 10 minutes before each meeting. Reads the classic Outlook on this PC while it is open. Meeting titles and times go through ntfy; nothing is copied into another calendar."/>
+
+                    <WrapPanel>
+                        <Button x:Name="StartCalendarButton"
+                                Content="Start calendar"
+                                Style="{StaticResource Primary}"
+                                Click="StartCalendar_Click"/>
+                        <Button x:Name="StopCalendarButton"
+                                Content="Stop calendar"
+                                IsEnabled="False"
+                                Click="StopCalendar_Click"/>
+                    </WrapPanel>
+
+                    <TextBlock x:Name="CalendarStatus"
+                               Text="Outlook calendar is stopped."
+                               Style="{StaticResource StatusText}"
+                               Margin="0,12,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ACTIVITY LOG -->
+            <Border Grid.Row="5" Style="{StaticResource Card}">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
@@ -301,7 +333,7 @@
 
             <!-- FOOTER -->
             <TextBlock x:Name="FooterText"
-                       Grid.Row="5"
+                       Grid.Row="6"
                        Text="NotiRelay · personal Teams and Outlook notification relay"
                        Style="{StaticResource Caption}"
                        HorizontalAlignment="Center"
