@@ -67,6 +67,10 @@ flowchart LR
 - **Secrets at rest.** The ntfy topic and queued payloads are protected with DPAPI for the current Windows user, never stored in clear text.
 - **Portability.** Ships either as one self-contained `.exe` (double-click) or as a per-user sparse package, so it runs on another PC without installing a runtime or needing admin rights.
 
+## Download
+
+Get `NotiRelay-<version>.exe` from the [Releases](https://github.com/iulian880/NotiRelay/releases) page. It is a self-contained single file: copy it to any Windows 10/11 x64 PC and run it, with no .NET install and no administrator rights. Every push to `main` rebuilds it on Windows (GitHub Actions) and updates the release; every pull request gets a test build under the workflow run's **Artifacts**.
+
 ## Build and run
 
 Requires the .NET 10 SDK on a Windows 10/11 x64 machine.

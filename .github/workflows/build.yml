@@ -1,0 +1,87 @@
+name: Build Windows exe
+
+# Every pull request: run the tests and build the standalone exe on Windows
+# (downloadable from the run's "Artifacts" section).
+# Every push to main: the same, then attach the exe to the GitHub Release
+# v<Version> (created if missing, otherwise updated and marked as latest).
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.value }}
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: Run tests
+        run: dotnet test tests/NotiRelay.Tests -c Release
+
+      - name: Read version
+        id: version
+        shell: pwsh
+        run: |
+          $match = Select-String -Path src/NotiRelay.csproj -Pattern '<Version>(.+)</Version>'
+          $version = $match.Matches[0].Groups[1].Value
+          # The value ends up in file names and release tags: accept only x.y.z.
+          if ($version -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Unexpected <Version> in src/NotiRelay.csproj"
+          }
+          "value=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Publish self-contained single-file exe
+        shell: pwsh
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+        run: |
+          dotnet publish src -c Release -r win-x64 --self-contained true `
+            -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true `
+            -p:EnableCompressionInSingleFile=true -o publish
+          Move-Item publish/NotiRelay.exe "NotiRelay-$env:VERSION.exe"
+
+      - uses: actions/upload-artifact@v5
+        with:
+          name: NotiRelay-${{ steps.version.outputs.value }}
+          path: NotiRelay-${{ steps.version.outputs.value }}.exe
+          if-no-files-found: error
+
+  release:
+    needs: build
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          name: NotiRelay-${{ needs.build.outputs.version }}
+
+      - name: Create or update the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.build.outputs.version }}
+        run: |
+          tag="v$VERSION"
+          exe="NotiRelay-$VERSION.exe"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            gh release upload "$tag" "$exe" --clobber
+            gh release edit "$tag" --prerelease=false --latest --title "NotiRelay $VERSION"
+          else
+            gh release create "$tag" "$exe" --target "$GITHUB_SHA" \
+              --title "NotiRelay $VERSION" --generate-notes --latest
+          fi
