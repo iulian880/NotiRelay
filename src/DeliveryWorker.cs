@@ -12,6 +12,9 @@ public sealed class DeliveryWorker
     private readonly CancellationTokenSource _cancellation = new();
     private readonly object _lifecycleLock = new();
 
+    // Used only by the worker loop.
+    private readonly DeliveryOutage _outage = new();
+
     private Task? _workerTask;
     private bool _started;
 
@@ -85,6 +88,13 @@ public sealed class DeliveryWorker
             {
                 try
                 {
+                    // ntfy.sh unreachable: wait instead of failing every queued item.
+                    if (DateTime.UtcNow < _outage.PausedUntilUtc)
+                    {
+                        await Task.Delay(1000, cancellationToken);
+                        continue;
+                    }
+
                     var item = await _queue.GetNextDueAsync();
 
                     if (item is null)
@@ -110,6 +120,11 @@ public sealed class DeliveryWorker
 
                         await _queue.MarkSentAsync(item.Id);
 
+                        string? recovered = _outage.RecordSuccess();
+
+                        if (recovered is not null)
+                            Report(recovered);
+
                         int pending =
                             await _queue.GetPendingCountAsync();
 
@@ -127,15 +142,27 @@ public sealed class DeliveryWorker
                     catch (Exception ex)
                     {
                         int nextAttempt = item.Attempts + 1;
+                        string reason = NtfyErrors.Describe(ex);
 
-                        await _queue.MarkFailedAsync(
-                            item.Id,
-                            ex.GetType().Name);
+                        await _queue.MarkFailedAsync(item.Id, reason);
 
-                        Report(
-                            $"Delivery failed. Attempt {nextAttempt}. " +
-                            $"Automatic retry scheduled. " +
-                            $"Error: {ex.GetType().Name}");
+                        if (NtfyErrors.IsOutage(ex))
+                        {
+                            // One line when the outage starts or changes, not one per item.
+                            string? line = _outage.RecordFailure(
+                                reason,
+                                await _queue.GetPendingCountAsync(),
+                                DateTime.UtcNow);
+
+                            if (line is not null)
+                                Report(line);
+                        }
+                        else
+                        {
+                            Report(
+                                $"Delivery rejected (attempt {nextAttempt}): {reason}. " +
+                                "Retrying later.");
+                        }
                     }
                 }
                 catch (OperationCanceledException)

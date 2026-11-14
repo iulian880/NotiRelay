@@ -486,9 +486,18 @@ public sealed class TeamsInboxWatcher
             if (!TeamsMessageParser.TryParse(
                     json,
                     out TeamsInboxMessage? message,
-                    out string error) ||
+                    out string error,
+                    out TeamsInboxMessage? nothingToForward) ||
                 message is null)
             {
+                if (nothingToForward is not null)
+                {
+                    // Complete but empty (system event, deleted message...): record it
+                    // once so it is not retried and logged again on every launch.
+                    SkipPermanently(nothingToForward, error, state);
+                    return;
+                }
+
                 RetryLater(state, error, path);
                 return;
             }
@@ -570,6 +579,33 @@ public sealed class TeamsInboxWatcher
                 ex.GetType().Name + ": " + ex.Message,
                 path);
         }
+    }
+
+    private void SkipPermanently(
+        TeamsInboxMessage message,
+        string reason,
+        FileState state)
+    {
+        string messageKey = MissedMessages.MessageKey(message);
+
+        state.Processed = true;
+        state.RetryAfterUtc = DateTime.MinValue;
+        state.FailedAttempts = 0;
+
+        if (!_processedMessageKeys.Add(messageKey))
+            return;
+
+        try
+        {
+            SaveProcessedKeys();
+        }
+        catch
+        {
+            _processedMessageKeys.Remove(messageKey);
+            throw;
+        }
+
+        Report("Teams message skipped, nothing to forward: " + reason);
     }
 
     private void RetryLater(

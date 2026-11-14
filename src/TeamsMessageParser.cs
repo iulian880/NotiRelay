@@ -73,9 +73,24 @@ public static class TeamsMessageParser
     public static bool TryParse(
         string json,
         out TeamsInboxMessage? result,
-        out string error)
+        out string error) =>
+        TryParse(json, out result, out error, out _);
+
+    /// <summary>
+    /// Like <see cref="TryParse(string, out TeamsInboxMessage?, out string)"/>, but tells a
+    /// complete message that simply has nothing to forward (a system event, a deleted
+    /// message, a card without text) apart from a file that may still be syncing:
+    /// <paramref name="nothingToForward"/> is set only in the first case, so callers can
+    /// record it as handled instead of retrying it on every launch.
+    /// </summary>
+    public static bool TryParse(
+        string json,
+        out TeamsInboxMessage? result,
+        out string error,
+        out TeamsInboxMessage? nothingToForward)
     {
         result = null;
+        nothingToForward = null;
         error = string.Empty;
 
         try
@@ -173,12 +188,6 @@ public static class TeamsMessageParser
                 text = AttachmentPlaceholder;
             }
 
-            if (string.IsNullOrWhiteSpace(text))
-            {
-                error = "Message body contains no readable text.";
-                return false;
-            }
-
             DateTimeOffset? createdAt = null;
 
             string? timestamp = GetString(
@@ -198,7 +207,7 @@ public static class TeamsMessageParser
             string messageType =
                 GetString(message, "messageType") ?? "message";
 
-            result = new TeamsInboxMessage(
+            var parsed = new TeamsInboxMessage(
                 messageId,
                 conversationId,
                 senderName,
@@ -208,6 +217,15 @@ public static class TeamsMessageParser
                 webUrl,
                 messageType);
 
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                // Complete, but nothing to forward: permanent, not a sync problem.
+                error = $"Message has no readable text (type: {messageType}).";
+                nothingToForward = parsed with { Text = string.Empty };
+                return false;
+            }
+
+            result = parsed;
             return true;
         }
         catch (JsonException ex)

@@ -1,6 +1,5 @@
 
 using System.IO;
-using System.Net;
 using System.Net.Http;
 using System.Reflection;
 using System.Windows;
@@ -594,7 +593,7 @@ public partial class MainWindow : Window
         }
         catch (Exception ex)
         {
-            SetStatus(NtfyStatus, "Test failed: " + DescribeNtfyError(ex), StatusKind.Error);
+            SetStatus(NtfyStatus, "Test failed: " + NtfyErrors.Describe(ex) + ".", StatusKind.Error);
 
             AddLog("ntfy test failed: " + ex.Message);
         }
@@ -605,19 +604,6 @@ public partial class MainWindow : Window
             TestNtfyButton.Content = "Send test";
         }
     }
-
-    private static string DescribeNtfyError(Exception ex) => ex switch
-    {
-        TaskCanceledException =>
-            "ntfy.sh did not answer within 15 seconds. Check your internet connection.",
-        HttpRequestException { StatusCode: HttpStatusCode.TooManyRequests } =>
-            "ntfy.sh rate limit reached. Wait a minute and try again.",
-        HttpRequestException { StatusCode: not null } http =>
-            $"ntfy.sh answered {(int)http.StatusCode.Value} ({http.StatusCode.Value}).",
-        HttpRequestException http =>
-            "Could not reach ntfy.sh: " + http.Message,
-        _ => ex.Message
-    };
 
     // ==========================================
     // MICROSOFT TEAMS - ONEDRIVE INBOX
