@@ -27,8 +27,19 @@
             <Border Grid.Row="0" Style="{StaticResource Card}" Padding="24">
                 <StackPanel>
                     <DockPanel>
+                        <StackPanel DockPanel.Dock="Right"
+                                    Orientation="Horizontal"
+                                    VerticalAlignment="Center">
+                        <Button x:Name="SendingButton"
+                                Content="Stop sending"
+                                Style="{StaticResource DangerButton}"
+                                Margin="0,0,10,0"
+                                MinHeight="32"
+                                Padding="14,6"
+                                AutomationProperties.Name="Stop or resume sending to ntfy"
+                                ToolTip="Stop sending anything to ntfy right now, including notifications already waiting."
+                                Click="SendingButton_Click"/>
                         <Border x:Name="StatePill"
-                                DockPanel.Dock="Right"
                                 Background="#F1F5F9"
                                 CornerRadius="999"
                                 Padding="13,7"
@@ -44,6 +55,7 @@
                                            Foreground="#64748B"/>
                             </StackPanel>
                         </Border>
+                        </StackPanel>
 
                         <StackPanel>
                             <TextBlock Text="NotiRelay"

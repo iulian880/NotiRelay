@@ -8,12 +8,14 @@ public sealed class DeliveryWorker
     private readonly DeliveryQueue _queue;
     private readonly HttpClient _httpClient;
     private readonly Action<string> _log;
+    private readonly SendingGate _gate;
 
     private readonly CancellationTokenSource _cancellation = new();
     private readonly object _lifecycleLock = new();
 
     // Used only by the worker loop.
     private readonly DeliveryOutage _outage = new();
+    private readonly DeliveryThrottle _throttle = new();
 
     private Task? _workerTask;
     private bool _started;
@@ -21,11 +23,13 @@ public sealed class DeliveryWorker
     public DeliveryWorker(
         DeliveryQueue queue,
         HttpClient httpClient,
-        Action<string> log)
+        Action<string> log,
+        SendingGate gate)
     {
         _queue = queue;
         _httpClient = httpClient;
         _log = log;
+        _gate = gate;
     }
 
     public void Start()
@@ -88,10 +92,13 @@ public sealed class DeliveryWorker
             {
                 try
                 {
-                    // ntfy.sh unreachable: wait instead of failing every queued item.
-                    if (DateTime.UtcNow < _outage.PausedUntilUtc)
+                    // Held (launch question or Stop sending), ntfy.sh unreachable, or pacing
+                    // after a 429: wait instead of taking the next item.
+                    if (!_gate.IsOpen ||
+                        DateTime.UtcNow < _outage.PausedUntilUtc ||
+                        DateTime.UtcNow < _throttle.NextSendUtc)
                     {
-                        await Task.Delay(1000, cancellationToken);
+                        await Task.Delay(250, cancellationToken);
                         continue;
                     }
 
@@ -137,6 +144,11 @@ public sealed class DeliveryWorker
                         Report(
                             $"Notification delivered successfully. " +
                             $"Pending: {pending}.");
+
+                        string? normalSpeed = _throttle.RecordSent(pending, DateTime.UtcNow);
+
+                        if (normalSpeed is not null)
+                            Report(normalSpeed);
                     }
                     catch (OperationCanceledException)
                         when (cancellationToken.IsCancellationRequested)
@@ -155,6 +167,19 @@ public sealed class DeliveryWorker
                             $"after {watch.ElapsedMilliseconds} ms " +
                             $"(affects the whole queue: {NtfyErrors.IsOutage(ex)})",
                             ex);
+
+                        if (NtfyErrors.IsRateLimit(ex))
+                        {
+                            // Not the message's fault: keep it first in line and slow down.
+                            string? slowDown = _throttle.RecordRateLimited(
+                                await _queue.GetPendingCountAsync(),
+                                DateTime.UtcNow);
+
+                            if (slowDown is not null)
+                                Report(slowDown);
+
+                            continue;
+                        }
 
                         await _queue.MarkFailedAsync(item.Id, reason);
 

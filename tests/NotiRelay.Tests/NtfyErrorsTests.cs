@@ -53,4 +53,15 @@ public class NtfyErrorsTests
         Assert.Equal(expected, NtfyErrors.Describe(ex));
         Assert.Equal(outage, NtfyErrors.IsOutage(ex));
     }
+
+    [Fact]
+    public void IsRateLimit_OnlyFor429()
+    {
+        Assert.True(NtfyErrors.IsRateLimit(
+            new HttpRequestException("limited", null, HttpStatusCode.TooManyRequests)));
+        Assert.False(NtfyErrors.IsRateLimit(
+            new HttpRequestException("down", null, HttpStatusCode.BadGateway)));
+        Assert.False(NtfyErrors.IsRateLimit(new HttpRequestException("no host")));
+        Assert.False(NtfyErrors.IsRateLimit(new TaskCanceledException()));
+    }
 }

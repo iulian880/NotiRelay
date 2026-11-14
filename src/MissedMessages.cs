@@ -81,9 +81,21 @@ public static class MissedMessages
             : local.ToString("d MMM yyyy", Invariant) + " " + time;
     }
 
-    public static string Describe(int teamsCount, int outlookCount, DateTime? oldestLocal, DateTime nowLocal)
+    public static string Describe(int teamsCount, int outlookCount, DateTime? oldestLocal, DateTime nowLocal) =>
+        Describe(0, teamsCount, outlookCount, oldestLocal, nowLocal);
+
+    /// <summary>Everything the launch question covers: unsent queue items from before plus missed messages.</summary>
+    public static string Describe(
+        int queuedCount, int teamsCount, int outlookCount, DateTime? oldestLocal, DateTime nowLocal)
     {
         var parts = new List<string>();
+
+        if (queuedCount > 0)
+        {
+            parts.Add(queuedCount == 1
+                ? "1 unsent notification from before"
+                : $"{queuedCount} unsent notifications from before");
+        }
 
         if (teamsCount > 0)
             parts.Add(teamsCount == 1 ? "1 Teams message" : $"{teamsCount} Teams messages");
@@ -97,6 +109,33 @@ public static class MissedMessages
         return string.Join(" · ", parts);
     }
 
+    /// <summary>What Resume sending asks about: notifications collected while sending was stopped.</summary>
+    public static string DescribeWaiting(int count, DateTime? oldestLocal, DateTime nowLocal)
+    {
+        string text = count == 1 ? "1 notification waiting" : $"{count} notifications waiting";
+
+        return oldestLocal is null
+            ? text
+            : text + " · oldest from " + FormatWhen(oldestLocal.Value, nowLocal);
+    }
+
+    public static PromptText LaunchPrompt(string details) => new(
+        Title: "Unsent notifications",
+        Question: Question,
+        Details: details,
+        Note: "Nothing is sent until you answer. No deletes these for good; " +
+              "new messages are relayed from now on either way.",
+        YesText: "Yes, send them",
+        NoText: "No, start from now");
+
+    public static PromptText ResumePrompt(string details) => new(
+        Title: "Notifications waiting",
+        Question: "Send the notifications collected while sending was stopped?",
+        Details: details,
+        Note: "No deletes them for good. New messages are sent as usual afterwards.",
+        YesText: "Yes, send them",
+        NoText: "No, discard them");
+
     public static string Title(string title)
     {
         string full = TitlePrefix + title;
@@ -106,3 +145,12 @@ public static class MissedMessages
     public static string Body(string text, DateTime? whenLocal, DateTime nowLocal) =>
         whenLocal is null ? text : $"[{FormatWhen(whenLocal.Value, nowLocal)}] {text}";
 }
+
+/// <summary>Texts for the warning prompt (launch question or Resume sending).</summary>
+public sealed record PromptText(
+    string Title,
+    string Question,
+    string Details,
+    string Note,
+    string YesText,
+    string NoText);
