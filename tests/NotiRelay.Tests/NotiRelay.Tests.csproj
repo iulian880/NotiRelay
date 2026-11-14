@@ -10,6 +10,7 @@
     <!-- The app targets WPF/Windows; link only the platform-neutral sources. -->
     <Compile Include="../../src/TeamsMessageParser.cs" Link="Linked/TeamsMessageParser.cs" />
     <Compile Include="../../src/NtfyClient.cs" Link="Linked/NtfyClient.cs" />
+    <Compile Include="../../src/NtfyTopic.cs" Link="Linked/NtfyTopic.cs" />
   </ItemGroup>
 
   <ItemGroup>

@@ -18,7 +18,7 @@ You subscribe to the same topic in the ntfy app on your phone and receive the te
 ## Features
 
 - Forward Outlook toasts (Windows notification listener) and Teams messages (OneDrive inbox) to ntfy.
-- **ntfy topic encrypted at rest** with Windows DPAPI for the current user.
+- **ntfy topic encrypted at rest** with Windows DPAPI for the current user; validated before saving, written atomically, with a warning for short, guessable topics.
 - **Durable delivery queue** with automatic retry and backoff — queued items are persisted (DPAPI-encrypted) and survive a restart.
 - **Baseline on start**: only notifications that appear after you press start are forwarded; existing ones are ignored.
 - **System tray**, minimize-to-tray, and optional **Start with Windows** (per-user `HKCU\…\Run`, launches straight into the tray).
@@ -27,7 +27,7 @@ You subscribe to the same topic in the ntfy app on your phone and receive the te
 
 ## Screenshots
 
-Idle and active (the header pill turns green and pulses while relaying):
+Idle and active (the header pill turns green, pulses and names the active sources while relaying):
 
 ![NotiRelay — stopped](docs/screenshots/main.png)
 ![NotiRelay — relaying](docs/screenshots/main-active.png)
@@ -88,8 +88,8 @@ Sparse-identity package for the notification listener (per-user, no admin): run 
 ### ntfy setup
 
 1. Pick a long, unguessable topic (anyone who knows it can read what is posted to it) and subscribe to it in the ntfy app, or at `https://ntfy.sh/<topic>`.
-2. Enter the topic in the app and press **Save settings** (stored DPAPI-encrypted in `%LOCALAPPDATA%\NotiRelay`).
-3. Press **Test ntfy**, then tick the confirmation and press **Start monitoring**.
+2. Paste the topic (or its `https://ntfy.sh/<topic>` link) into the app and press **Save topic** or Enter. It is validated first, so a bad value never replaces the saved one, then stored DPAPI-encrypted in `%LOCALAPPDATA%\NotiRelay`. The window confirms it with the last four characters (`✓ Saved: ••••9q2x`).
+3. Press **Send test**. For Outlook, tick the confirmation once (it is remembered) and press **Start Outlook monitoring**.
 
 ## Notes
 
