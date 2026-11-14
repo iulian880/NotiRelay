@@ -7,7 +7,7 @@
          IgnorableNamespaces="uap uap3 uap10 rescap">
   <Identity Name="com.iulian.NotiRelay"
             Publisher="CN=NotiRelay Dev"
-            Version="1.0.0.0"
+            Version="1.0.1.0"
             ProcessorArchitecture="neutral" />
   <Properties>
     <DisplayName>NotiRelay</DisplayName>
