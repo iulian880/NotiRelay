@@ -1,0 +1,54 @@
+<Window x:Class="NotiRelay.MissedMessagesDialog"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="NotiRelay"
+        Icon="Assets/NotiRelay.ico"
+        Width="500"
+        SizeToContent="Height"
+        ResizeMode="NoResize"
+        WindowStartupLocation="CenterScreen"
+        Topmost="True"
+        ShowInTaskbar="True"
+        Background="{StaticResource AppBackgroundBrush}"
+        TextOptions.TextFormattingMode="Ideal"
+        UseLayoutRounding="True">
+
+    <Border Style="{StaticResource Card}" Margin="16" Padding="24">
+        <StackPanel>
+            <TextBlock Text="Missed while NotiRelay was closed"
+                       Style="{StaticResource FieldLabel}"
+                       Foreground="{StaticResource MutedBrush}"
+                       Margin="0,0,0,8"/>
+
+            <TextBlock x:Name="QuestionText"
+                       FontSize="16"
+                       FontWeight="SemiBold"
+                       LineHeight="22"
+                       TextWrapping="Wrap"
+                       Foreground="{StaticResource InkBrush}"/>
+
+            <TextBlock x:Name="DetailsText"
+                       Style="{StaticResource StatusText}"
+                       Foreground="{StaticResource InkBrush}"
+                       Margin="0,10,0,0"/>
+
+            <TextBlock Text="New messages are already being forwarded. No skips the missed ones for good."
+                       Style="{StaticResource Caption}"
+                       TextWrapping="Wrap"
+                       Margin="0,12,0,20"/>
+
+            <StackPanel Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Yes"
+                        Style="{StaticResource Primary}"
+                        MinWidth="96"
+                        IsDefault="True"
+                        Click="Yes_Click"/>
+                <Button Content="No"
+                        MinWidth="96"
+                        Margin="0"
+                        IsCancel="True"
+                        Click="No_Click"/>
+            </StackPanel>
+        </StackPanel>
+    </Border>
+</Window>

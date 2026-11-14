@@ -20,7 +20,8 @@ You subscribe to the same topic in the ntfy app on your phone and receive the te
 - Forward Outlook toasts (Windows notification listener) and Teams messages (OneDrive inbox) to ntfy.
 - **ntfy topic encrypted at rest** with Windows DPAPI for the current user; validated before saving, written atomically, with a warning for short, guessable topics.
 - **Durable delivery queue** with automatic retry and backoff — queued items are persisted (DPAPI-encrypted) and survive a restart.
-- **Baseline on start**: only notifications that appear after you press start are forwarded; existing ones are ignored.
+- **Missed while closed?** At launch, if Teams messages or Outlook notifications arrived while the app was closed, it asks *"Do you want me to send the messages that you missed while the app was closed?"*. **Yes** sends them oldest first, marked `Missed ·` with their original time; **No** skips them for good. New messages are relayed right away either way.
+- **Baseline on first start**: on the very first run, existing inbox files and toasts are ignored.
 - **System tray**, minimize-to-tray, and optional **Start with Windows** (per-user `HKCU\…\Run`, launches straight into the tray).
 - Message bodies are not written to the local activity log.
 - Single-file self-contained build, or a sparse-MSIX package for the notification-listener capability — both per-user, no admin.

@@ -11,6 +11,7 @@
     <Compile Include="../../src/TeamsMessageParser.cs" Link="Linked/TeamsMessageParser.cs" />
     <Compile Include="../../src/NtfyClient.cs" Link="Linked/NtfyClient.cs" />
     <Compile Include="../../src/NtfyTopic.cs" Link="Linked/NtfyTopic.cs" />
+    <Compile Include="../../src/MissedMessages.cs" Link="Linked/MissedMessages.cs" />
   </ItemGroup>
 
   <ItemGroup>

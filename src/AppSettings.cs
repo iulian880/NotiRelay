@@ -28,6 +28,10 @@ public sealed class AppSettings
     // given once by the user and never switched on by the app itself.
     public bool OutlookForwardingConfirmed { get; set; }
 
+    // Last moment NotiRelay was known to be running. On the next launch, Outlook
+    // toasts newer than this count as missed while the app was closed.
+    public DateTimeOffset? LastActiveUtc { get; set; }
+
     /// <summary>Set when settings.json existed but could not be read.</summary>
     [JsonIgnore]
     public string? LoadWarning { get; private set; }

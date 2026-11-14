@@ -43,6 +43,17 @@ public partial class MainWindow : Window
     private bool _isTestingNtfy;
     private bool _topicRevealed;
     private bool _trayHintShown;
+    private bool _heartbeatErrorLogged;
+
+    // When NotiRelay last ran, read before this run overwrites it: toasts newer than
+    // this were missed while the app was closed.
+    private readonly DateTimeOffset? _previousActiveUtc;
+    private readonly DispatcherTimer _heartbeatTimer;
+
+    private readonly List<MissedOutlookToast> _missedOutlook = new();
+    private IReadOnlyList<MissedTeamsMessage> _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+
+    private sealed record MissedOutlookToast(string Text, DateTimeOffset CreatedAt, string QueueId);
 
     private enum StatusKind { Neutral, Success, Warning, Error }
 
@@ -60,6 +71,16 @@ public partial class MainWindow : Window
         StateChanged += MainWindow_StateChanged;
 
         _settings = AppSettings.Load();
+
+        _previousActiveUtc = _settings.LastActiveUtc;
+
+        // Record that NotiRelay is running (every 30 s, on every forwarded toast, on exit
+        // and when Windows signs out), so the next launch knows what was missed.
+        _heartbeatTimer = new DispatcherTimer { Interval = TimeSpan.FromSeconds(30) };
+        _heartbeatTimer.Tick += (_, _) => SaveHeartbeat();
+        _heartbeatTimer.Start();
+
+        System.Windows.Application.Current.SessionEnding += (_, _) => SaveHeartbeat();
 
         TeamsInboxPathBox.Text = _settings.TeamsInboxPath;
 
@@ -129,9 +150,137 @@ public partial class MainWindow : Window
             if (Array.IndexOf(Environment.GetCommandLineArgs(), StartupManager.AutostartArgument) >= 0)
                 WindowState = WindowState.Minimized;
 
+            // New messages are relayed from now on; only those missed while the app was
+            // closed wait for the user's answer.
             await AutoStartAsync();
             await AutoStartTeamsInboxAsync();
+            await AskAboutMissedMessagesAsync();
         };
+    }
+
+    // ==========================================
+    // MESSAGES MISSED WHILE THE APP WAS CLOSED
+    // ==========================================
+
+    private void TryCaptureMissedOutlook(UserNotification item)
+    {
+        try
+        {
+            if (!MissedMessages.IsMissedOutlook(item.CreationTime, _previousActiveUtc))
+                return;
+
+            if (!IsSupportedApp(item.AppInfo?.DisplayInfo?.DisplayName ?? string.Empty))
+                return;
+
+            string text = ExtractNotificationText(item);
+
+            if (string.IsNullOrWhiteSpace(text))
+                return;
+
+            _missedOutlook.Add(new MissedOutlookToast(
+                text,
+                item.CreationTime,
+                $"{item.Id}:{item.CreationTime.UtcDateTime.Ticks}"));
+        }
+        catch (Exception ex)
+        {
+            AddLog("A notification could not be checked for missed messages: " + ex.Message);
+        }
+    }
+
+    private async Task AskAboutMissedMessagesAsync()
+    {
+        int teamsCount = _launchMissedTeams.Count;
+        int outlookCount = _missedOutlook.Count;
+
+        if (teamsCount + outlookCount == 0 || _isShuttingDown)
+            return;
+
+        DateTimeOffset? oldest = _launchMissedTeams
+            .Select(missed => (DateTimeOffset?)missed.SortTimeUtc)
+            .Concat(_missedOutlook.Select(toast => (DateTimeOffset?)toast.CreatedAt))
+            .Min();
+
+        string details = MissedMessages.Describe(
+            teamsCount,
+            outlookCount,
+            oldest?.LocalDateTime,
+            DateTime.Now);
+
+        AddLog("Missed while closed: " + details + ". Waiting for your answer.");
+
+        bool send = MissedMessagesDialog.Ask(details);
+
+        if (_isShuttingDown)
+            return;
+
+        if (teamsCount > 0)
+            _teamsInboxWatcher.ResolveHeld(send);
+
+        _launchMissedTeams = Array.Empty<MissedTeamsMessage>();
+
+        await ResolveMissedOutlookAsync(send);
+
+        AddLog(send
+            ? "You chose to send the missed messages; they are sent oldest first."
+            : "You chose to skip the missed messages; relaying continues from now.");
+    }
+
+    private async Task ResolveMissedOutlookAsync(bool send)
+    {
+        if (_missedOutlook.Count == 0)
+            return;
+
+        var toasts = _missedOutlook.OrderBy(toast => toast.CreatedAt).ToList();
+        _missedOutlook.Clear();
+
+        if (!send)
+        {
+            AddLog($"Missed Outlook notifications skipped: {toasts.Count}.");
+            return;
+        }
+
+        try
+        {
+            string topic = RequireTopic();
+            DateTime nowLocal = DateTime.Now;
+
+            foreach (MissedOutlookToast toast in toasts)
+            {
+                await _deliveryQueue.EnqueueAsync(
+                    toast.QueueId,
+                    MissedMessages.Body(
+                        BuildNtfyPayload(toast.Text, toast.CreatedAt),
+                        toast.CreatedAt.LocalDateTime,
+                        nowLocal),
+                    MissedMessages.Title("OUTLOOK"),
+                    "urgent",
+                    topic);
+            }
+
+            AddLog($"Missed Outlook notifications queued: {toasts.Count}.");
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not queue the missed Outlook notifications: " + ex.Message);
+        }
+    }
+
+    private void SaveHeartbeat()
+    {
+        try
+        {
+            _settings.LastActiveUtc = DateTimeOffset.UtcNow;
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            if (_heartbeatErrorLogged)
+                return;
+
+            _heartbeatErrorLogged = true;
+            AddLog("Could not record when NotiRelay last ran: " + ex.Message);
+        }
     }
 
     // ==========================================
@@ -227,6 +376,9 @@ public partial class MainWindow : Window
             return;
 
         _isShuttingDown = true;
+
+        _heartbeatTimer.Stop();
+        SaveHeartbeat();
 
         AddLog("NotiRelay graceful shutdown started.");
 
@@ -590,7 +742,9 @@ public partial class MainWindow : Window
         }
     }
 
-    private void StartTeamsInboxMonitoring(bool automatic)
+    private void StartTeamsInboxMonitoring(
+        bool automatic,
+        IReadOnlyList<MissedTeamsMessage>? held = null)
     {
         if (_isTeamsInboxRunning)
             return;
@@ -617,7 +771,7 @@ public partial class MainWindow : Window
                 inboxPath);
         }
 
-        _teamsInboxWatcher.Start(inboxPath);
+        _teamsInboxWatcher.Start(inboxPath, held);
 
         _isTeamsInboxRunning = true;
 
@@ -639,14 +793,14 @@ public partial class MainWindow : Window
         }
     }
 
-    private Task AutoStartTeamsInboxAsync()
+    private async Task AutoStartTeamsInboxAsync()
     {
         if (string.IsNullOrWhiteSpace(_settings.TeamsInboxPath))
         {
             AddLog(
                 "Teams auto-start skipped: inbox folder is not configured.");
 
-            return Task.CompletedTask;
+            return;
         }
 
         if (!_settings.TryGetTopic(out _))
@@ -654,7 +808,7 @@ public partial class MainWindow : Window
             AddLog(
                 "Teams auto-start skipped: ntfy topic is not configured.");
 
-            return Task.CompletedTask;
+            return;
         }
 
         if (!Directory.Exists(_settings.TeamsInboxPath))
@@ -667,12 +821,26 @@ public partial class MainWindow : Window
             AddLog(
                 "Teams auto-start skipped: configured inbox folder is unavailable.");
 
-            return Task.CompletedTask;
+            return;
+        }
+
+        // Messages that arrived while the app was closed are held until the user answers.
+        IReadOnlyList<MissedTeamsMessage> missed = Array.Empty<MissedTeamsMessage>();
+        string inboxPath = _settings.TeamsInboxPath;
+
+        try
+        {
+            missed = await Task.Run(() => _teamsInboxWatcher.FindUnsent(inboxPath));
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not look for missed Teams messages: " + ex.Message);
         }
 
         try
         {
-            StartTeamsInboxMonitoring(automatic: true);
+            StartTeamsInboxMonitoring(automatic: true, held: missed);
+            _launchMissedTeams = missed;
         }
         catch (Exception ex)
         {
@@ -683,8 +851,6 @@ public partial class MainWindow : Window
                 "Teams auto-start failed: " +
                 ex.Message);
         }
-
-        return Task.CompletedTask;
     }
 
     private void SetTeamsInboxRunningState(bool running)
@@ -772,10 +938,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        await StartForwardingAsync(automatic: true);
+        await StartForwardingAsync(automatic: true, captureMissed: true);
     }
 
-    private async Task<bool> StartForwardingAsync(bool automatic)
+    private async Task<bool> StartForwardingAsync(bool automatic, bool captureMissed = false)
     {
         if (_isRunning)
             return true;
@@ -814,14 +980,22 @@ public partial class MainWindow : Window
                 return false;
             }
 
-            // Existing notifications are ignored.
+            // Existing notifications are not forwarded by the poll. At launch, the Outlook
+            // ones that appeared after NotiRelay last ran are kept aside for the
+            // "send what you missed?" question.
             var current = await _listener.GetNotificationsAsync(
                 NotificationKinds.Toast);
 
             _seenNotificationIds.Clear();
+            _missedOutlook.Clear();
 
             foreach (var item in current)
+            {
                 _seenNotificationIds.Add(item.Id);
+
+                if (captureMissed)
+                    TryCaptureMissedOutlook(item);
+            }
 
             _isRunning = true;
 
@@ -830,7 +1004,9 @@ public partial class MainWindow : Window
             SetRunningState(true);
 
             SetStatus(ListenerStatus,
-                $"Outlook monitoring active. Existing notifications ignored: {current.Count}.",
+                _missedOutlook.Count > 0
+                    ? $"Outlook monitoring active. Missed while closed: {_missedOutlook.Count}."
+                    : $"Outlook monitoring active. Existing notifications ignored: {current.Count}.",
                 StatusKind.Success);
 
             AddLog(automatic
@@ -924,6 +1100,10 @@ public partial class MainWindow : Window
                     topic);
 
                 _seenNotificationIds.Add(notification.Id);
+
+                // Forwarded toasts must never be offered again as "missed", even if
+                // the app is killed before the next heartbeat.
+                SaveHeartbeat();
 
                 int pending =
                     await _deliveryQueue.GetPendingCountAsync();
