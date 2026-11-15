@@ -35,6 +35,9 @@ public sealed class AppSettings
     // The Debugging button: kept on across restarts until the user turns it off.
     public bool DebugLoggingEnabled { get; set; }
 
+    // Outlook calendar notifications: started by the user, remembered across restarts.
+    public bool CalendarEnabled { get; set; }
+
     /// <summary>Set when settings.json existed but could not be read.</summary>
     [JsonIgnore]
     public string? LoadWarning { get; private set; }

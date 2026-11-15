@@ -27,6 +27,8 @@ public partial class MainWindow : Window
     private readonly DeliveryQueue _deliveryQueue;
     private readonly DeliveryWorker _deliveryWorker;
     private readonly TeamsInboxWatcher _teamsInboxWatcher;
+    private readonly CalendarWatcher _calendarWatcher;
+    private bool _isCalendarRunning;
 
     private readonly System.Drawing.Icon _trayImage;
     private readonly System.Windows.Forms.NotifyIcon _trayIcon;
@@ -113,6 +115,11 @@ public partial class MainWindow : Window
             LogFromWorker,
             _sendingGate);
 
+        _calendarWatcher = new CalendarWatcher(
+            _deliveryQueue,
+            () => _settings.GetTopic(),
+            LogFromWorker);
+
         _teamsInboxWatcher = new TeamsInboxWatcher(
             _deliveryQueue,
             () => _settings.GetTopic(),
@@ -188,6 +195,10 @@ public partial class MainWindow : Window
 
             await AutoStartAsync();
             await AutoStartTeamsInboxAsync();
+
+            if (_settings.CalendarEnabled)
+                StartCalendar(automatic: true);
+
             await AskAboutBacklogAtLaunchAsync(backlog);
         };
     }
@@ -319,6 +330,91 @@ public partial class MainWindow : Window
 
     private static string NotificationsCount(int count) =>
         count == 1 ? "1 notification" : $"{count} notifications";
+
+    // ==========================================
+    // OUTLOOK CALENDAR
+    // ==========================================
+
+    private void StartCalendar_Click(object sender, RoutedEventArgs e) =>
+        StartCalendar(automatic: false);
+
+    private void StartCalendar(bool automatic)
+    {
+        if (_isCalendarRunning || _isShuttingDown)
+            return;
+
+        try
+        {
+            SaveEnteredTopicIfAny();
+            RequireTopic();
+
+            _calendarWatcher.Start();
+            _isCalendarRunning = true;
+            SetCalendarRunningState(true);
+            SaveCalendarSetting(true);
+
+            SetStatus(
+                CalendarStatus,
+                "Sending your meetings: changes right away, today's agenda at 08:00, " +
+                "and a reminder 10 minutes before each one.",
+                StatusKind.Success);
+
+            AddLog(automatic
+                ? "Outlook calendar started automatically."
+                : "Outlook calendar started.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus(CalendarStatus, "Could not start the calendar: " + ex.Message, StatusKind.Error);
+            AddLog("Outlook calendar start failed: " + ex.Message, ex);
+        }
+    }
+
+    private async void StopCalendar_Click(object sender, RoutedEventArgs e)
+    {
+        try
+        {
+            await _calendarWatcher.StopAsync();
+
+            _isCalendarRunning = false;
+            SetCalendarRunningState(false);
+            SaveCalendarSetting(false);
+
+            SetStatus(CalendarStatus, "Outlook calendar is stopped.", StatusKind.Neutral);
+            AddLog("Outlook calendar stopped by user.");
+
+            await HintWaitingAfterSourceStopAsync();
+        }
+        catch (Exception ex)
+        {
+            SetStatus(CalendarStatus, "Could not stop the calendar: " + ex.Message, StatusKind.Error);
+            AddLog("Outlook calendar stop failed: " + ex.Message, ex);
+        }
+    }
+
+    private void SetCalendarRunningState(bool running)
+    {
+        StartCalendarButton.IsEnabled = !running;
+        StopCalendarButton.IsEnabled = running;
+        UpdateHeaderState();
+    }
+
+    private void SaveCalendarSetting(bool enabled)
+    {
+        if (_settings.CalendarEnabled == enabled)
+            return;
+
+        _settings.CalendarEnabled = enabled;
+
+        try
+        {
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not remember the calendar setting: " + ex.Message, ex);
+        }
+    }
 
     // ==========================================
     // STOP / RESUME SENDING
@@ -628,6 +724,16 @@ public partial class MainWindow : Window
             AddLog(
                 "Teams watcher shutdown error: " +
                 ex.GetType().Name + ": " + ex.Message, ex);
+        }
+
+        try
+        {
+            await _calendarWatcher.StopAsync();
+            _isCalendarRunning = false;
+        }
+        catch (Exception ex)
+        {
+            AddLog("Calendar shutdown error: " + ex.Message, ex);
         }
 
         try
@@ -1525,6 +1631,9 @@ public partial class MainWindow : Window
         if (_isRunning)
             sources.Add("Outlook");
 
+        if (_isCalendarRunning)
+            sources.Add("Calendar");
+
         bool active = sources.Count > 0;
 
         StateBadge.Text = active
@@ -1968,6 +2077,7 @@ public partial class MainWindow : Window
             "  Start with Windows: " + startWithWindows,
             "  Outlook monitoring running: " + YesNo(_isRunning),
             "  Teams monitoring running: " + YesNo(_isTeamsInboxRunning),
+            "  Outlook calendar running: " + YesNo(_isCalendarRunning),
             "  Last active before this start: " + lastActive,
             "  ntfy request timeout: " + _httpClient.Timeout.TotalSeconds + " s",
             "  Sending: " + (_sendingGate.IsHeld(SendingHold.StoppedByUser)
