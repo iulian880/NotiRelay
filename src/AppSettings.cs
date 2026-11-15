@@ -38,6 +38,13 @@ public sealed class AppSettings
     // Outlook calendar notifications: started by the user, remembered across restarts.
     public bool CalendarEnabled { get; set; }
 
+    // Optional ntfy topic per notification category (DPAPI-protected, base64),
+    // keyed by category name. A category without one uses the main topic.
+    public Dictionary<string, string> ProtectedCategoryTopics { get; set; } = new();
+
+    // Low-battery alerts: started by the user, remembered across restarts.
+    public bool BatteryAlertsEnabled { get; set; }
+
     /// <summary>Set when settings.json existed but could not be read.</summary>
     [JsonIgnore]
     public string? LoadWarning { get; private set; }
@@ -117,6 +124,108 @@ public sealed class AppSettings
                 plain, null, DataProtectionScope.CurrentUser);
 
             ProtectedTopic = Convert.ToBase64String(encrypted);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plain);
+        }
+    }
+
+    /// <summary>The category's own topic; false when none is set or it cannot be decrypted.</summary>
+    public bool TryGetCategoryTopic(NotificationCategory category, out string topic)
+    {
+        topic = string.Empty;
+
+        if (ProtectedCategoryTopics is null ||
+            !ProtectedCategoryTopics.TryGetValue(category.ToString(), out string? stored) ||
+            string.IsNullOrWhiteSpace(stored))
+        {
+            return false;
+        }
+
+        try
+        {
+            topic = Unprotect(stored);
+            return topic.Length > 0;
+        }
+        catch (Exception ex) when (ex is CryptographicException or FormatException)
+        {
+            topic = string.Empty;
+            return false;
+        }
+    }
+
+    public bool HasStoredCategoryTopic(NotificationCategory category) =>
+        ProtectedCategoryTopics?.ContainsKey(category.ToString()) == true;
+
+    public IReadOnlyDictionary<NotificationCategory, string> GetCategoryTopics()
+    {
+        var topics = new Dictionary<NotificationCategory, string>();
+
+        foreach (NotificationCategory category in NotificationTopics.All)
+        {
+            if (TryGetCategoryTopic(category, out string topic))
+                topics[category] = topic;
+        }
+
+        return topics;
+    }
+
+    /// <summary>Where notifications of this category go: its own topic, else the main one.</summary>
+    public string GetTopicFor(NotificationCategory category) =>
+        TryGetCategoryTopic(category, out string own) ? own : GetTopic();
+
+    /// <summary>Saves a category's own topic (already validated); null or empty removes it.</summary>
+    public void SaveCategoryTopic(NotificationCategory category, string? topic)
+    {
+        ProtectedCategoryTopics ??= new Dictionary<string, string>();
+
+        string key = category.ToString();
+        bool had = ProtectedCategoryTopics.TryGetValue(key, out string? previous);
+
+        if (string.IsNullOrWhiteSpace(topic))
+            ProtectedCategoryTopics.Remove(key);
+        else
+            ProtectedCategoryTopics[key] = Protect(topic);
+
+        try
+        {
+            Save();
+        }
+        catch
+        {
+            if (had)
+                ProtectedCategoryTopics[key] = previous!;
+            else
+                ProtectedCategoryTopics.Remove(key);
+
+            throw;
+        }
+    }
+
+    private static string Protect(string value)
+    {
+        byte[] plain = Encoding.UTF8.GetBytes(value);
+
+        try
+        {
+            return Convert.ToBase64String(ProtectedData.Protect(
+                plain, null, DataProtectionScope.CurrentUser));
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(plain);
+        }
+    }
+
+    private static string Unprotect(string protectedValue)
+    {
+        byte[] plain = ProtectedData.Unprotect(
+            Convert.FromBase64String(protectedValue), null, DataProtectionScope.CurrentUser);
+
+        try
+        {
+            return Encoding.UTF8.GetString(plain);
         }
         finally
         {

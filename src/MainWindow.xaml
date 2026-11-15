@@ -22,6 +22,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <!-- HEADER -->
@@ -143,11 +144,171 @@
                                 Click="SaveSettings_Click"/>
                         <Button x:Name="TestNtfyButton"
                                 Content="Send test"
-                                ToolTip="Sends a test notification to the saved topic"
+                                ToolTip="Sends a test notification to every topic in use"
                                 Click="TestNtfy_Click"/>
                     </WrapPanel>
 
                     <TextBlock x:Name="NtfyStatus"
+                               Style="{StaticResource StatusText}"
+                               Margin="0,12,0,0"/>
+
+                    <Border Height="1" Background="{StaticResource CardBorderBrush}"
+                            Margin="0,16,0,14"/>
+
+                    <TextBlock Text="Topic per notification type (optional)" Style="{StaticResource FieldLabel}"/>
+                    <TextBlock Text="Leave a row empty to use the main topic. Send test sends one test to every topic in use."
+                               Style="{StaticResource Caption}"
+                               TextWrapping="Wrap"
+                               Margin="0,0,0,10"/>
+
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="165"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Teams messages"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource InkBrush}"/>
+                        <Grid Grid.Column="1">
+                            <TextBox x:Name="TopicTeamsBox"
+                                     Margin="0"
+                                     Tag="Teams"
+                                     AutomationProperties.Name="ntfy topic for Teams messages"
+                                     TextChanged="CategoryTopic_Changed"/>
+                            <TextBlock x:Name="TopicTeamsPlaceholder"
+                                       Text="Empty = main topic"
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
+                        <TextBlock x:Name="TopicTeamsState"
+                                   Grid.Column="2"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource Caption}"/>
+                        <Button x:Name="TopicTeamsClear"
+                                Grid.Column="3"
+                                Content="Use main"
+                                Tag="Teams"
+                                Style="{StaticResource SmallButton}"
+                                Margin="8,0,0,0"
+                                Visibility="Collapsed"
+                                ToolTip="Send Teams messages to the main topic again"
+                                Click="CategoryTopicClear_Click"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="165"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Outlook notifications"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource InkBrush}"/>
+                        <Grid Grid.Column="1">
+                            <TextBox x:Name="TopicOutlookBox"
+                                     Margin="0"
+                                     Tag="Outlook"
+                                     AutomationProperties.Name="ntfy topic for Outlook notifications"
+                                     TextChanged="CategoryTopic_Changed"/>
+                            <TextBlock x:Name="TopicOutlookPlaceholder"
+                                       Text="Empty = main topic"
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
+                        <TextBlock x:Name="TopicOutlookState"
+                                   Grid.Column="2"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource Caption}"/>
+                        <Button x:Name="TopicOutlookClear"
+                                Grid.Column="3"
+                                Content="Use main"
+                                Tag="Outlook"
+                                Style="{StaticResource SmallButton}"
+                                Margin="8,0,0,0"
+                                Visibility="Collapsed"
+                                ToolTip="Send Outlook notifications to the main topic again"
+                                Click="CategoryTopicClear_Click"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="165"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Meetings"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource InkBrush}"/>
+                        <Grid Grid.Column="1">
+                            <TextBox x:Name="TopicCalendarBox"
+                                     Margin="0"
+                                     Tag="Calendar"
+                                     AutomationProperties.Name="ntfy topic for Meetings"
+                                     TextChanged="CategoryTopic_Changed"/>
+                            <TextBlock x:Name="TopicCalendarPlaceholder"
+                                       Text="Empty = main topic"
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
+                        <TextBlock x:Name="TopicCalendarState"
+                                   Grid.Column="2"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource Caption}"/>
+                        <Button x:Name="TopicCalendarClear"
+                                Grid.Column="3"
+                                Content="Use main"
+                                Tag="Calendar"
+                                Style="{StaticResource SmallButton}"
+                                Margin="8,0,0,0"
+                                Visibility="Collapsed"
+                                ToolTip="Send Meetings to the main topic again"
+                                Click="CategoryTopicClear_Click"/>
+                    </Grid>
+                    <Grid Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="165"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="Power &amp; battery"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource InkBrush}"/>
+                        <Grid Grid.Column="1">
+                            <TextBox x:Name="TopicBatteryBox"
+                                     Margin="0"
+                                     Tag="Battery"
+                                     AutomationProperties.Name="ntfy topic for Power &amp; battery"
+                                     TextChanged="CategoryTopic_Changed"/>
+                            <TextBlock x:Name="TopicBatteryPlaceholder"
+                                       Text="Empty = main topic"
+                                       Style="{StaticResource Placeholder}"/>
+                        </Grid>
+                        <TextBlock x:Name="TopicBatteryState"
+                                   Grid.Column="2"
+                                   Margin="10,0,0,0"
+                                   VerticalAlignment="Center"
+                                   Style="{StaticResource Caption}"/>
+                        <Button x:Name="TopicBatteryClear"
+                                Grid.Column="3"
+                                Content="Use main"
+                                Tag="Battery"
+                                Style="{StaticResource SmallButton}"
+                                Margin="8,0,0,0"
+                                Visibility="Collapsed"
+                                ToolTip="Send Power &amp; battery to the main topic again"
+                                Click="CategoryTopicClear_Click"/>
+                    </Grid>
+
+                    <WrapPanel Margin="0,4,0,0">
+                        <Button x:Name="SaveCategoryTopicsButton"
+                                Content="Save topics"
+                                Click="SaveCategoryTopics_Click"/>
+                    </WrapPanel>
+
+                    <TextBlock x:Name="CategoryTopicsStatus"
                                Style="{StaticResource StatusText}"
                                Margin="0,12,0,0"/>
                 </StackPanel>
@@ -259,7 +420,7 @@
                     </StackPanel>
 
                     <TextBlock Style="{StaticResource SectionDesc}"
-                               Text="Optional. Sends your meetings to the phone: new, moved or cancelled meetings within about 15 seconds, today's agenda at 08:00, and a reminder 10 minutes before each meeting. Reads the classic Outlook on this PC while it is open. Meeting titles and times go through ntfy; nothing is copied into another calendar."/>
+                               Text="Optional. Sends your meetings to the phone: new, moved or cancelled meetings within about 15 seconds, today's agenda at 08:45, and a reminder 10 minutes before each meeting. Reads the classic Outlook on this PC while it is open. Meeting titles and times go through ntfy; nothing is copied into another calendar."/>
 
                     <WrapPanel>
                         <Button x:Name="StartCalendarButton"
@@ -279,8 +440,35 @@
                 </StackPanel>
             </Border>
 
-            <!-- ACTIVITY LOG -->
+            <!-- POWER & BATTERY -->
             <Border Grid.Row="5" Style="{StaticResource Card}">
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal">
+                        <Border Style="{StaticResource StepBadge}">
+                            <TextBlock Text="5" Style="{StaticResource StepNumber}"/>
+                        </Border>
+                        <TextBlock Text="Power &amp; battery" Style="{StaticResource SectionTitle}"/>
+                    </StackPanel>
+
+                    <TextBlock Style="{StaticResource SectionDesc}"
+                               Text="Optional. Sends an alert when the laptop battery drops to 30% and again at 10% while it is not charging."/>
+
+                    <CheckBox x:Name="BatteryAlertsCheckBox"
+                              Checked="BatteryAlerts_Toggled"
+                              Unchecked="BatteryAlerts_Toggled"
+                              Foreground="{StaticResource InkBrush}">
+                        <TextBlock Text="Send low-battery alerts (remembered)" FontSize="12.5"/>
+                    </CheckBox>
+
+                    <TextBlock x:Name="BatteryStatusText"
+                               Text="Low-battery alerts are off."
+                               Style="{StaticResource StatusText}"
+                               Margin="0,12,0,0"/>
+                </StackPanel>
+            </Border>
+
+            <!-- ACTIVITY LOG -->
+            <Border Grid.Row="6" Style="{StaticResource Card}">
                 <DockPanel>
                     <DockPanel DockPanel.Dock="Top" Margin="0,0,0,12">
                         <StackPanel DockPanel.Dock="Right" Orientation="Horizontal"
@@ -333,7 +521,7 @@
 
             <!-- FOOTER -->
             <TextBlock x:Name="FooterText"
-                       Grid.Row="6"
+                       Grid.Row="7"
                        Text="NotiRelay · personal Teams and Outlook notification relay"
                        Style="{StaticResource Caption}"
                        HorizontalAlignment="Center"
