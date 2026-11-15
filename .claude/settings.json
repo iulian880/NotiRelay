@@ -1,0 +1,17 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(**/*.pfx)",
+      "Edit(**/*.pfx)",
+      "Write(**/*.pfx)",
+      "Read(**/*.snk)",
+      "Edit(**/*.snk)",
+      "Write(**/*.snk)",
+      "Read(**/*.thumbprint.txt)",
+      "Bash(git push origin main)",
+      "Bash(git push origin main *)",
+      "Bash(git push origin HEAD:main*)",
+      "Bash(gh release delete *)"
+    ]
+  }
+}
