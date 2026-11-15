@@ -16,7 +16,7 @@ On this Mac the SDK is `~/.dotnet/dotnet` (it may be missing from PATH).
 - Never report the app as runtime-tested unless it ran on Windows; say what stayed unverified.
 
 ## Structure
-- `src/`: one project, no NuGet packages, no MVVM toolkit. Logic lives in code-behind (`MainWindow.xaml.cs`, ~2.4k lines) plus plain classes.
+- `src/`: one project, no NuGet packages, no MVVM toolkit. Logic lives in code-behind (`MainWindow.xaml.cs`, 2k+ lines) plus plain classes.
   - Pipeline: `UserNotificationListener` / `TeamsInboxWatcher` + `TeamsMessageParser` → `DeliveryQueue` (DPAPI-encrypted, retry/backoff) → `DeliveryWorker` → `NtfyClient` → ntfy.sh.
   - Calendar: `OutlookCalendarReader` (COM), `CalendarWatcher`, `CalendarNotifications`, `CalendarState`.
   - Data: `%LOCALAPPDATA%\NotiRelay`; the ntfy topic and the queue are DPAPI-protected.
@@ -34,7 +34,6 @@ On this Mac the SDK is `~/.dotnet/dotnet` (it may be missing from PATH).
 - Release: bump `<Version>`, `<FileVersion>` and `<InformationalVersion>` in `src/NotiRelay.csproj` before a user-visible release; otherwise the next push to `main` overwrites the current release's exe.
 - `.gitignore` ignores every `settings.json` except `.claude/settings.json`.
 - The C# LSP (csharp-ls) reports a false `CS0121 ambiguous between X and X` (identical signatures) once a file linked into both projects (e.g. `NtfyClient.cs`) is open. Ignore it; `dotnet build` is the authority.
-- Code comments mention an internal design document that is not in the repo.
 - One user-facing test string is Romanian on purpose.
 
 ## Safety
@@ -43,7 +42,7 @@ On this Mac the SDK is `~/.dotnet/dotnet` (it may be missing from PATH).
 
 ## UI and design
 - Visual tokens: the Palette section of `src/App.xaml` (brushes and styles).
-- Design system, once generated: `design-system/notirelay/MASTER.md`, the single source for visual decisions. Generate it with the `ui-ux-pro-max` skill, giving the real stack (WPF desktop tray app, `--stack wpf`), never the HTML/Tailwind default; save with `--persist --output-dir <repo root>`.
+- Design system, once generated: `design-system/notirelay/MASTER.md`, the single source for visual decisions. Generate it with the `ui-ux-pro-max` skill: `--design-system -p notirelay --persist --output-dir <repo root>`, with the real stack in the query text ("WPF desktop tray app ..."), never the HTML/Tailwind default. `--design-system` ignores `--stack`; run `--stack wpf` as a separate search for WPF implementation guidelines.
 - Owners: visual decisions → `ui-ux-pro-max`; WPF correctness (XAML, binding, threading) → `wpf` skill.
 
 ## Local third-party skills (not in git, excluded via `.git/info/exclude`)
