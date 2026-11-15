@@ -31,4 +31,5 @@ publish/
 *.sqlite
 *.log
 settings.json
+!.claude/settings.json
 *.dat
