@@ -4,7 +4,7 @@ namespace NotiRelay;
 
 /// <summary>
 /// Every 15 s reads the classic Outlook calendar (today to +7 days) and queues: changes
-/// (new / moved / cancelled), today's agenda once a day from 08:00, and a reminder 10 minutes
+/// (new / moved / cancelled), today's agenda once a day from 08:45, and a reminder 10 minutes
 /// before each meeting. The first read after start only records what exists. Everything goes
 /// through the delivery queue, so Stop sending and the launch question apply. The activity log
 /// never shows meeting titles.
@@ -13,7 +13,7 @@ public sealed class CalendarWatcher
 {
     public static readonly TimeSpan ScanInterval = TimeSpan.FromSeconds(15);
     public static readonly TimeSpan ReminderLead = TimeSpan.FromMinutes(10);
-    public static readonly TimeOnly AgendaTime = new(8, 0);
+    public static readonly TimeOnly AgendaTime = new(8, 45);
     public const int WindowDays = 7;
 
     private readonly DeliveryQueue _queue;

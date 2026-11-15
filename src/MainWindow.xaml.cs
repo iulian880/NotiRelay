@@ -30,6 +30,14 @@ public partial class MainWindow : Window
     private readonly CalendarWatcher _calendarWatcher;
     private bool _isCalendarRunning;
 
+    private readonly BatteryWatcher _batteryWatcher;
+    private bool _isBatteryRunning;
+    private bool _suppressBatteryToggle;
+
+    // The "topic per notification type" rows in the ntfy card.
+    private Dictionary<NotificationCategory, (System.Windows.Controls.TextBox Box, TextBlock Placeholder,
+        TextBlock State, System.Windows.Controls.Button Clear)>? _categoryTopicRows;
+
     private readonly System.Drawing.Icon _trayImage;
     private readonly System.Windows.Forms.NotifyIcon _trayIcon;
 
@@ -51,6 +59,7 @@ public partial class MainWindow : Window
     // Debug log: the topic to mask (refreshed whenever the saved topic changes) and
     // whether a write failure was already shown on screen.
     private string? _debugTopic;
+    private IReadOnlyList<string> _debugTopics = Array.Empty<string>();
     private bool _debugWriteWarned;
 
     // Sending to ntfy is held until the launch question is answered, and while the user
@@ -117,16 +126,26 @@ public partial class MainWindow : Window
 
         _calendarWatcher = new CalendarWatcher(
             _deliveryQueue,
-            () => _settings.GetTopic(),
+            () => _settings.GetTopicFor(NotificationCategory.Calendar),
             LogFromWorker);
+
+        _batteryWatcher = new BatteryWatcher(
+            _deliveryQueue,
+            () => _settings.GetTopicFor(NotificationCategory.Battery),
+            LogFromWorker,
+            ShowBatteryStatus);
 
         _teamsInboxWatcher = new TeamsInboxWatcher(
             _deliveryQueue,
-            () => _settings.GetTopic(),
+            () => _settings.GetTopicFor(NotificationCategory.Teams),
             LogFromWorker);
 
+        InitCategoryTopicRows();
         RefreshTopicState();
+        RefreshCategoryTopicStates();
         ShowInitialNtfyStatus();
+
+        SetBatteryCheckBox(_settings.BatteryAlertsEnabled);
 
         HookUnhandledExceptionsIntoDebugLog();
 
@@ -198,6 +217,9 @@ public partial class MainWindow : Window
 
             if (_settings.CalendarEnabled)
                 StartCalendar(automatic: true);
+
+            if (_settings.BatteryAlertsEnabled)
+                StartBatteryAlerts(automatic: true);
 
             await AskAboutBacklogAtLaunchAsync(backlog);
         };
@@ -332,6 +354,243 @@ public partial class MainWindow : Window
         count == 1 ? "1 notification" : $"{count} notifications";
 
     // ==========================================
+    // TOPIC PER NOTIFICATION TYPE
+    // ==========================================
+
+    private void InitCategoryTopicRows()
+    {
+        _categoryTopicRows = new()
+        {
+            [NotificationCategory.Teams] = (TopicTeamsBox, TopicTeamsPlaceholder, TopicTeamsState, TopicTeamsClear),
+            [NotificationCategory.Outlook] = (TopicOutlookBox, TopicOutlookPlaceholder, TopicOutlookState, TopicOutlookClear),
+            [NotificationCategory.Calendar] = (TopicCalendarBox, TopicCalendarPlaceholder, TopicCalendarState, TopicCalendarClear),
+            [NotificationCategory.Battery] = (TopicBatteryBox, TopicBatteryPlaceholder, TopicBatteryState, TopicBatteryClear)
+        };
+    }
+
+    private static NotificationCategory CategoryOf(object sender) =>
+        Enum.Parse<NotificationCategory>((string)((FrameworkElement)sender).Tag);
+
+    private void CategoryTopic_Changed(object sender, TextChangedEventArgs e)
+    {
+        if (_categoryTopicRows is null)
+            return;
+
+        var row = _categoryTopicRows[CategoryOf(sender)];
+        row.Placeholder.Visibility = row.Box.Text.Length == 0
+            ? Visibility.Visible
+            : Visibility.Collapsed;
+    }
+
+    private void SaveCategoryTopics_Click(object sender, RoutedEventArgs e)
+    {
+        if (_categoryTopicRows is null)
+            return;
+
+        var saved = new List<string>();
+
+        foreach (var (category, row) in _categoryTopicRows)
+        {
+            string topic = NtfyTopic.Normalize(row.Box.Text);
+
+            if (topic.Length == 0)
+                continue;
+
+            string name = NotificationTopics.DisplayName(category);
+            string? error = NtfyTopic.Validate(topic);
+
+            if (error is not null)
+            {
+                RefreshCategoryTopicStates();
+                SetStatus(CategoryTopicsStatus, $"{name}: {error}", StatusKind.Error);
+                row.Box.Focus();
+                return;
+            }
+
+            try
+            {
+                _settings.SaveCategoryTopic(category, topic);
+                row.Box.Clear();
+                saved.Add(name);
+            }
+            catch (Exception ex)
+            {
+                RefreshCategoryTopicStates();
+                SetStatus(CategoryTopicsStatus, $"{name}: could not save the topic: {ex.Message}", StatusKind.Error);
+                AddLog($"ntfy topic for {name} not saved: " + ex.Message, ex);
+                return;
+            }
+        }
+
+        RefreshCategoryTopicStates();
+
+        if (saved.Count == 0)
+        {
+            SetStatus(CategoryTopicsStatus,
+                "Type a topic in a row first. Empty rows use the main topic.",
+                StatusKind.Warning);
+            return;
+        }
+
+        SetStatus(CategoryTopicsStatus,
+            "Saved for " + string.Join(", ", saved) + ". New notifications of these types go to their own topic.",
+            StatusKind.Success);
+
+        AddLog("ntfy topic saved for: " + string.Join(", ", saved) + ".");
+    }
+
+    private void CategoryTopicClear_Click(object sender, RoutedEventArgs e)
+    {
+        NotificationCategory category = CategoryOf(sender);
+        string name = NotificationTopics.DisplayName(category);
+
+        try
+        {
+            _settings.SaveCategoryTopic(category, null);
+            RefreshCategoryTopicStates();
+            SetStatus(CategoryTopicsStatus, $"{name} go to the main topic again.", StatusKind.Neutral);
+            AddLog($"{name} now use the main ntfy topic.");
+        }
+        catch (Exception ex)
+        {
+            SetStatus(CategoryTopicsStatus, $"{name}: could not change the topic: {ex.Message}", StatusKind.Error);
+            AddLog($"ntfy topic for {name} not changed: " + ex.Message, ex);
+        }
+    }
+
+    private void RefreshCategoryTopicStates()
+    {
+        if (_categoryTopicRows is not null)
+        {
+            foreach (var (category, row) in _categoryTopicRows)
+            {
+                bool own = _settings.TryGetCategoryTopic(category, out string topic);
+                bool unreadable = !own && _settings.HasStoredCategoryTopic(category);
+
+                row.State.Text = own
+                    ? "✓ " + NtfyTopic.Mask(topic)
+                    : unreadable ? "⚠ can't be read; using main" : "main topic";
+
+                row.Clear.Visibility = own || unreadable ? Visibility.Visible : Visibility.Collapsed;
+            }
+        }
+
+        RefreshDebugTopics();
+    }
+
+    // Every configured topic is masked in the debug log.
+    private void RefreshDebugTopics()
+    {
+        var topics = new List<string>();
+
+        if (!string.IsNullOrEmpty(_debugTopic))
+            topics.Add(_debugTopic);
+
+        topics.AddRange(_settings.GetCategoryTopics().Values);
+
+        _debugTopics = topics.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    // ==========================================
+    // POWER & BATTERY
+    // ==========================================
+
+    private void BatteryAlerts_Toggled(object sender, RoutedEventArgs e)
+    {
+        if (_suppressBatteryToggle)
+            return;
+
+        if (BatteryAlertsCheckBox.IsChecked == true)
+            StartBatteryAlerts(automatic: false);
+        else
+            _ = StopBatteryAlertsAsync();
+    }
+
+    private void StartBatteryAlerts(bool automatic)
+    {
+        if (_isBatteryRunning || _isShuttingDown)
+            return;
+
+        try
+        {
+            SaveEnteredTopicIfAny();
+            RequireTopic();
+
+            _batteryWatcher.Start();
+            _isBatteryRunning = true;
+            SetBatteryCheckBox(true);
+            SaveBatterySetting(true);
+
+            SetStatus(BatteryStatusText, "Checking the battery…", StatusKind.Neutral);
+
+            AddLog(automatic
+                ? "Low-battery alerts started automatically."
+                : "Low-battery alerts started.");
+        }
+        catch (Exception ex)
+        {
+            SetBatteryCheckBox(false);
+            SetStatus(BatteryStatusText, "Could not start low-battery alerts: " + ex.Message, StatusKind.Error);
+            AddLog("Low-battery alerts start failed: " + ex.Message, ex);
+        }
+    }
+
+    private async Task StopBatteryAlertsAsync()
+    {
+        try
+        {
+            await _batteryWatcher.StopAsync();
+        }
+        catch (Exception ex)
+        {
+            AddLog("Low-battery alerts stop error: " + ex.Message, ex);
+        }
+
+        _isBatteryRunning = false;
+        SaveBatterySetting(false);
+
+        SetStatus(BatteryStatusText, "Low-battery alerts are off.", StatusKind.Neutral);
+        AddLog("Low-battery alerts stopped by user.");
+    }
+
+    private void SetBatteryCheckBox(bool value)
+    {
+        _suppressBatteryToggle = true;
+        BatteryAlertsCheckBox.IsChecked = value;
+        _suppressBatteryToggle = false;
+    }
+
+    private void SaveBatterySetting(bool enabled)
+    {
+        if (_settings.BatteryAlertsEnabled == enabled)
+            return;
+
+        _settings.BatteryAlertsEnabled = enabled;
+
+        try
+        {
+            _settings.Save();
+        }
+        catch (Exception ex)
+        {
+            AddLog("Could not remember the battery alerts setting: " + ex.Message, ex);
+        }
+    }
+
+    // Called by the battery watcher from a background thread.
+    private void ShowBatteryStatus(string text)
+    {
+        if (Dispatcher.HasShutdownStarted || Dispatcher.HasShutdownFinished)
+            return;
+
+        Dispatcher.BeginInvoke(new Action(() =>
+        {
+            if (_isBatteryRunning)
+                SetStatus(BatteryStatusText, text, StatusKind.Neutral);
+        }));
+    }
+
+    // ==========================================
     // OUTLOOK CALENDAR
     // ==========================================
 
@@ -355,7 +614,7 @@ public partial class MainWindow : Window
 
             SetStatus(
                 CalendarStatus,
-                "Sending your meetings: changes right away, today's agenda at 08:00, " +
+                "Sending your meetings: changes right away, today's agenda at 08:45, " +
                 "and a reminder 10 minutes before each one.",
                 StatusKind.Success);
 
@@ -553,7 +812,8 @@ public partial class MainWindow : Window
 
         try
         {
-            string topic = RequireTopic();
+            RequireTopic();
+            string topic = _settings.GetTopicFor(NotificationCategory.Outlook);
             DateTime nowLocal = DateTime.Now;
 
             foreach (MissedOutlookToast toast in toasts)
@@ -724,6 +984,16 @@ public partial class MainWindow : Window
             AddLog(
                 "Teams watcher shutdown error: " +
                 ex.GetType().Name + ": " + ex.Message, ex);
+        }
+
+        try
+        {
+            await _batteryWatcher.StopAsync();
+            _isBatteryRunning = false;
+        }
+        catch (Exception ex)
+        {
+            AddLog("Battery alerts shutdown error: " + ex.Message, ex);
         }
 
         try
@@ -912,15 +1182,29 @@ public partial class MainWindow : Window
         {
             SaveEnteredTopicIfAny();
 
-            var client = GetNtfyClient();
+            string mainTopic = RequireTopic();
 
-            await client.SendSyntheticTestAsync();
+            // One test per distinct topic, titled with the notification types that use it.
+            IReadOnlyList<TopicTarget> targets =
+                NotificationTopics.DistinctTargets(mainTopic, _settings.GetCategoryTopics());
+
+            foreach (TopicTarget target in targets)
+            {
+                await new NtfyClient(target.Topic, _httpClient).SendMessageAsync(
+                    "Test reușit! NotiRelay comunică cu ntfy.",
+                    NotificationTopics.TestTitle(target),
+                    "high");
+            }
 
             SetStatus(NtfyStatus,
-                "Test sent. It should appear on your phone within a few seconds.",
+                targets.Count == 1
+                    ? "Test sent. It should appear on your phone within a few seconds."
+                    : $"Test sent to {targets.Count} topics; the title of each says which notification types use it.",
                 StatusKind.Success);
 
-            AddLog("Synthetic ntfy test notification sent.");
+            AddLog(targets.Count == 1
+                ? "Synthetic ntfy test notification sent."
+                : $"Synthetic ntfy test sent to {targets.Count} topics.");
         }
         catch (Exception ex)
         {
@@ -1401,7 +1685,8 @@ public partial class MainWindow : Window
                     continue;
                 }
 
-                string topic = RequireTopic();
+                RequireTopic();
+                string topic = _settings.GetTopicFor(NotificationCategory.Outlook);
 
                 string payload = BuildNtfyPayload(
                     messageText,
@@ -1738,6 +2023,7 @@ public partial class MainWindow : Window
     private void RefreshTopicState()
     {
         _debugTopic = _settings.TryGetTopic(out string savedTopic) ? savedTopic : null;
+        RefreshDebugTopics();
 
         if (!_settings.HasStoredTopic)
         {
@@ -1939,7 +2225,7 @@ public partial class MainWindow : Window
             folders.Add(exeFolder);
         folders.Add(fallbackFolder);
 
-        DebugLogFile? file = DebugLogFile.Open(folders, () => _debugTopic, out string? error);
+        DebugLogFile? file = DebugLogFile.OpenForTopics(folders, () => _debugTopics, out string? error);
 
         if (file is null)
         {
@@ -2078,6 +2364,12 @@ public partial class MainWindow : Window
             "  Outlook monitoring running: " + YesNo(_isRunning),
             "  Teams monitoring running: " + YesNo(_isTeamsInboxRunning),
             "  Outlook calendar running: " + YesNo(_isCalendarRunning),
+            "  Low-battery alerts running: " + YesNo(_isBatteryRunning),
+            "  Topics: " + string.Join(", ", NotificationTopics.All.Select(category =>
+                NotificationTopics.DisplayName(category) + " = " +
+                (_settings.TryGetCategoryTopic(category, out string own)
+                    ? DebugLogFile.MaskTopic(own)
+                    : _settings.HasStoredCategoryTopic(category) ? "unreadable, main" : "main"))),
             "  Last active before this start: " + lastActive,
             "  ntfy request timeout: " + _httpClient.Timeout.TotalSeconds + " s",
             "  Sending: " + (_sendingGate.IsHeld(SendingHold.StoppedByUser)

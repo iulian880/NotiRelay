@@ -21,13 +21,13 @@ public sealed class DebugLogFile
     private static readonly UTF8Encoding Utf8NoBom = new(false);
 
     private readonly object _gate = new();
-    private readonly Func<string?> _topic;
+    private readonly Func<IReadOnlyList<string>> _topics;
     private readonly long _maxBytes;
 
-    private DebugLogFile(string filePath, Func<string?> topic, long maxBytes)
+    private DebugLogFile(string filePath, Func<IReadOnlyList<string>> topics, long maxBytes)
     {
         FilePath = filePath;
-        _topic = topic;
+        _topics = topics;
         _maxBytes = maxBytes;
     }
 
@@ -43,6 +43,18 @@ public sealed class DebugLogFile
     public static DebugLogFile? Open(
         IReadOnlyList<string> directories,
         Func<string?> topic,
+        out string? error,
+        long maxBytes = DefaultMaxBytes) =>
+        OpenForTopics(
+            directories,
+            () => topic() is { Length: > 0 } single ? new[] { single } : Array.Empty<string>(),
+            out error,
+            maxBytes);
+
+    /// <summary>Like <see cref="Open"/>, masking every topic the provider returns.</summary>
+    public static DebugLogFile? OpenForTopics(
+        IReadOnlyList<string> directories,
+        Func<IReadOnlyList<string>> topics,
         out string? error,
         long maxBytes = DefaultMaxBytes)
     {
@@ -60,7 +72,7 @@ public sealed class DebugLogFile
                 }
 
                 error = null;
-                return new DebugLogFile(path, topic, maxBytes);
+                return new DebugLogFile(path, topics, maxBytes);
             }
             catch (Exception ex) when (IsFileProblem(ex))
             {
@@ -82,7 +94,7 @@ public sealed class DebugLogFile
 
         try
         {
-            text = Format(localTime, Redact(message, _topic()));
+            text = Format(localTime, RedactAll(message, _topics()));
         }
         catch (Exception ex)
         {
@@ -157,6 +169,22 @@ public sealed class DebugLogFile
 
         if (topic.Length >= 4)
             text = text.Replace(topic, mask, StringComparison.Ordinal);
+
+        return text;
+    }
+
+    /// <summary>Applies <see cref="Redact"/> for every topic (longest first).</summary>
+    public static string RedactAll(string text, IEnumerable<string?> topics)
+    {
+        // Credentials are hidden even when no topic is configured.
+        text = Redact(text, null);
+
+        foreach (string? topic in topics
+                     .Where(topic => !string.IsNullOrEmpty(topic))
+                     .OrderByDescending(topic => topic!.Length))
+        {
+            text = Redact(text, topic);
+        }
 
         return text;
     }

@@ -150,4 +150,29 @@ public class DebugLogFileTests : IDisposable
         Assert.Equal("••••", DebugLogFile.MaskTopic("abcdefg"));
         Assert.Equal(NtfyTopic.Mask("my-secret-topic-123"), DebugLogFile.MaskTopic("my-secret-topic-123"));
     }
+
+    [Fact]
+    public void Redact_MasksEveryConfiguredTopic()
+    {
+        string[] topics = { "main-topic-1234567", "meetings-topic-987654" };
+
+        string text = DebugLogFile.RedactAll(
+            "sent to main-topic-1234567 and https://ntfy.sh/meetings-topic-987654", topics);
+
+        Assert.DoesNotContain("main-topic-1234567", text);
+        Assert.DoesNotContain("meetings-topic-987654", text);
+    }
+
+    [Fact]
+    public void TryWrite_MasksTopicsFromAListProvider()
+    {
+        string[] topics = { "main-topic-1234567", "battery-topic-55555" };
+        DebugLogFile log = DebugLogFile.OpenForTopics(new[] { _root }, () => topics, out _)!;
+
+        log.TryWrite(DateTime.Now, "battery-topic-55555 and main-topic-1234567");
+
+        string content = File.ReadAllText(log.FilePath);
+        Assert.DoesNotContain("battery-topic-55555", content);
+        Assert.DoesNotContain("main-topic-1234567", content);
+    }
 }

@@ -21,6 +21,8 @@
     <Compile Include="../../src/DeliveryThrottle.cs" Link="Linked/DeliveryThrottle.cs" />
     <Compile Include="../../src/CalendarNotifications.cs" Link="Linked/CalendarNotifications.cs" />
     <Compile Include="../../src/CalendarState.cs" Link="Linked/CalendarState.cs" />
+    <Compile Include="../../src/NotificationTopics.cs" Link="Linked/NotificationTopics.cs" />
+    <Compile Include="../../src/BatteryAlerts.cs" Link="Linked/BatteryAlerts.cs" />
   </ItemGroup>
 
   <ItemGroup>
